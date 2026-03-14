@@ -1,73 +1,34 @@
-# React + TypeScript + Vite
+# Refra
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Refraは、社内チーム向けのリファレンス素材（画像・動画）を共有・閲覧・比較・コメントできるWebアプリです。
 
-Currently, two official plugins are available:
+## 主な特徴
+- 完全サーバーレス構成（S3/LocalStack、Cognito認証）
+- フロントエンド: Vite + React + TypeScript
+- ダーク/ライトテーマ対応、レスポンシブUI
+- アセットのアップロード・詳細・比較・コメント機能
+- フォルダ・タグ管理、仮想スクロール
+- テスト: Vitest（ユニット/コンポーネント）、Playwright（E2E）
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## 開発環境
+- Docker ComposeでLocalStackを起動し、S3/Cognitoをエミュレート
+- `.env`で環境変数を設定
+- `npm install`で依存パッケージ導入
+- `npm run dev`でローカル開発サーバ起動
 
-## React Compiler
+## テスト
+- `npm run test`（ユニット/コンポーネント）
+- `npm run e2e`（E2E: Playwright）
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## ディレクトリ構成
+- `src/` ... フロントエンド実装
+- `docker-compose.yml` ... LocalStack構成
+- `to_human.md` ... 人間向け質問/要望記載（gitignore済み）
+- `spec.md` ... 仕様書
 
-## Expanding the ESLint configuration
+## 注意事項
+- 環境依存パッケージは極力Dockerで吸収。追加インストールが必要な場合は`to_human.md`に記載。
+- 実装・進捗管理はGitHub Issueで行い、完了タスクは随時Close。
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
-
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+## ライセンス
+MIT License

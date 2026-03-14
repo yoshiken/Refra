@@ -54,12 +54,6 @@
 
 ## 3. データモデル
 
-### 3.1 用語定義
-
-| 用語 | 説明 |
-|------|------|
-| **アセット (Asset)** | アップロードされた元ファイル（画像 or 動画） |
-| **シーン (Scene)** | 動画アセットから切り出された数秒のクリップ。画像の場合はアセットとシーンが1:1 |
 
 ### 3.2 メタデータ構造
 
@@ -618,21 +612,7 @@ LLM（Claude Code）による開発だからこそテストが重要:
 - タグのフィルタリングロジック（AND/OR）
 - コメントのソート、タイムスタンプ付きコメントのフィルタ
 
-```typescript
-// 例: metadata.test.ts（テストを先に書く）
-describe('MetadataService', () => {
-  it('アセット作成時にインデックスにエントリが追加される', async () => {
-    const asset = createTestAsset({ name: 'テスト画像', type: 'image' });
-    await metadataService.createAsset(asset);
-    const index = await metadataService.getIndex();
-    expect(index.assets).toContainEqual(expect.objectContaining({ id: asset.id }));
-  });
 
-  it('ETag不一致時にリトライしてマージする', async () => {
-    // ... 競合シナリオのテスト
-  });
-});
-```
 
 ### 11.4 コンポーネントテスト（React Testing Library）
 
@@ -658,22 +638,7 @@ UIコンポーネントの振る舞いをテスト。DOM操作やイベントの
 #### スクリーンショット検証
 Claude Codeでの開発時、Playwrightのスクリーンショット機能でUIの状態を視覚的に確認する:
 
-```typescript
-// 例: スクリーンショットを撮って視覚検証
-test('サムネイル一覧が正しく表示される', async ({ page }) => {
-  await page.goto('/');
-  // テストデータのアセットが表示されること
-  await expect(page.getByTestId('thumbnail-grid')).toBeVisible();
-  await page.screenshot({ path: 'screenshots/gallery-default.png', fullPage: true });
-});
 
-test('ダークモードとライトモードの切り替え', async ({ page }) => {
-  await page.goto('/');
-  await page.screenshot({ path: 'screenshots/theme-dark.png' });
-  await page.getByTestId('theme-toggle').click();
-  await page.screenshot({ path: 'screenshots/theme-light.png' });
-});
-```
 
 #### E2Eテストシナリオ
 
