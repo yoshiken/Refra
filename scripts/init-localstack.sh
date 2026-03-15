@@ -4,6 +4,11 @@ set -e
 ENDPOINT="http://localhost:4566"
 BUCKET="refra-dev"
 
+# LocalStack用ダミー認証情報
+export AWS_ACCESS_KEY_ID=test
+export AWS_SECRET_ACCESS_KEY=test
+export AWS_DEFAULT_REGION=us-east-1
+
 echo "Waiting for LocalStack..."
 until curl -s "$ENDPOINT/_localstack/health" | grep -q '"s3": "running"'; do
   sleep 1

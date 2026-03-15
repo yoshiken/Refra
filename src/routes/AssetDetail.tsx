@@ -2,9 +2,12 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { deleteFile } from '@/services/storage';
 import { getAssetMeta, putAssetMeta, removeFromIndex, updateIndex } from '@/services/metadata';
+import { getS3Url } from '@/lib/s3Client';
 import type { AssetMeta, CommentMeta } from '@/types';
 import ImageViewer from '@/components/ImageViewer';
 import CommentPanel from '@/components/CommentPanel';
+import VideoPlayer from '@/components/VideoPlayer';
+import SceneEditor from '@/components/SceneEditor';
 
 export default function AssetDetail() {
   const navigate = useNavigate();
@@ -39,6 +42,8 @@ export default function AssetDetail() {
       name: next.name,
       type: next.type,
       thumbnailPath: next.thumbnailPath,
+      originalPath: next.originalPath,
+      previewPath: next.previewPath,
       folderId: next.folderId,
       tags: next.tags,
       createdBy: next.createdBy,
@@ -68,6 +73,9 @@ export default function AssetDetail() {
     const thumbnailKey = asset.thumbnailPath.replace(/^\//, '');
     await deleteFile(originalKey);
     await deleteFile(thumbnailKey);
+    if (asset.previewPath) {
+      await deleteFile(asset.previewPath.replace(/^\//, ''));
+    }
     for (const scene of asset.scenes) {
       await deleteFile(scene.clipPath.replace(/^\//, ''));
       await deleteFile(scene.thumbnailPath.replace(/^\//, ''));
@@ -145,15 +153,41 @@ export default function AssetDetail() {
               </button>
             </div>
             {asset.type === 'image' ? (
-              <ImageViewer src={asset.originalPath} alt={asset.name} />
+              <ImageViewer src={getS3Url(asset.originalPath)} alt={asset.name} />
             ) : (
-              <video src={asset.originalPath} controls className="w-full rounded" />
+              <VideoPlayer
+                src={getS3Url(asset.originalPath)}
+                comments={asset.comments}
+                scenes={asset.scenes}
+                duration={asset.duration}
+                autoPlay
+                loop
+              />
             )}
-            {asset.sourceUrl && (
+            {asset.sourceUrlMeta ? (
+              <div className="mt-3 text-xs text-text-secondary">
+                <p>
+                  引用元:{' '}
+                  <a href={asset.sourceUrlMeta.url} className="underline">
+                    {asset.sourceUrlMeta.title}
+                  </a>
+                </p>
+                <p>チャンネル: {asset.sourceUrlMeta.channel}</p>
+              </div>
+            ) : asset.sourceUrl ? (
               <p className="mt-3 text-xs text-text-secondary">
-                引用元: <a href={asset.sourceUrl} className="underline">{asset.sourceUrl}</a>
+                引用元:{' '}
+                <a href={asset.sourceUrl} className="underline">
+                  {asset.sourceUrl}
+                </a>
               </p>
-            )}
+            ) : null}
+            <SceneEditor
+              asset={asset}
+              onUpdate={async (next) => {
+                await saveMeta(next);
+              }}
+            />
           </section>
           <CommentPanel
             comments={asset.comments}

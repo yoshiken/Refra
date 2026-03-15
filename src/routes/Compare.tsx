@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { clearCompareAssets, getCompareAssets } from '@/stores/compareStore';
 import { getAssetMeta } from '@/services/metadata';
+import { getS3Url } from '@/lib/s3Client';
 import type { AssetMeta } from '@/types';
 
 function gridClass(count: number): string {
@@ -33,11 +34,11 @@ function AssetPanel({
     <section className="rounded border border-border-primary bg-bg-secondary p-3">
       <p className="mb-2 text-sm font-semibold">{asset.name}</p>
       {asset.type === 'image' ? (
-        <img src={asset.originalPath} alt={asset.name} className="max-h-[55vh] w-full rounded object-contain" />
+        <img src={getS3Url(asset.originalPath)} alt={asset.name} className="max-h-[55vh] w-full rounded object-contain" />
       ) : (
         <video
           ref={(el) => registerVideo(index, el)}
-          src={asset.originalPath}
+          src={getS3Url(asset.originalPath)}
           controls
           className="w-full rounded"
           onPlay={index === 0 ? onPrimaryPlay : undefined}

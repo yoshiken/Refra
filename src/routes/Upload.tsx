@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { uploadFile } from '@/services/storage';
-import { generateImageThumbnail, generateVideoThumbnail } from '@/services/thumbnail';
+import { generateImageThumbnail, generateVideoPreview, generateVideoThumbnail } from '@/services/thumbnail';
 import { getIndex, putAssetMeta, updateIndex } from '@/services/metadata';
 import type { AssetMeta, AssetIndexEntry, FolderMeta } from '@/types';
 
@@ -72,14 +73,18 @@ function getVideoMeta(video: HTMLVideoElement): {
 }
 
 export default function Upload() {
+  const navigate = useNavigate();
   const [file, setFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [tags, setTags] = useState('');
   const [sourceUrl, setSourceUrl] = useState('');
   const [folderId, setFolderId] = useState('');
   const [status, setStatus] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
   const [folders, setFolders] = useState<FolderMeta[]>([]);
 
   useEffect(() => {
@@ -102,7 +107,9 @@ export default function Upload() {
 
   const onSelectFile = (selected: File | null) => {
     if (!selected) return;
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
     setFile(selected);
+    setPreviewUrl(URL.createObjectURL(selected));
     if (!name.trim()) {
       setName(selected.name.replace(/\.[^.]+$/, ''));
     }
@@ -125,12 +132,15 @@ export default function Upload() {
 
     setIsUploading(true);
     setError(null);
+    setUploadProgress(null);
     setStatus('サムネイル生成中...');
 
     try {
       let duration: number | null = null;
       let resolution: { width: number; height: number } | null = null;
       let thumbnailBlob: Blob;
+      let previewBlob: Blob | null = null;
+      const previewKey = `previews/${assetId}.webm`;
 
       if (fileType === 'image') {
         const image = await loadImage(file);
@@ -142,11 +152,20 @@ export default function Upload() {
         const videoMeta = getVideoMeta(video);
         duration = videoMeta.duration;
         resolution = videoMeta.resolution;
+        setStatus('プレビュー動画生成中...');
+        previewBlob = await generateVideoPreview(video);
       }
 
       setStatus('S3へアップロード中...');
-      await uploadFile(assetKey, file);
+      await uploadFile(assetKey, file, (percent) => {
+        setUploadProgress(percent);
+      });
       await uploadFile(thumbnailKey, thumbnailBlob);
+      if (previewBlob) {
+        await uploadFile(previewKey, previewBlob);
+      }
+
+      const previewPath = previewBlob ? `/${previewKey}` : null;
 
       const metadata: AssetMeta = {
         id: assetId,
@@ -154,6 +173,7 @@ export default function Upload() {
         type: fileType,
         originalPath: `/${assetKey}`,
         thumbnailPath: `/${thumbnailKey}`,
+        previewPath,
         folderId: folderId || null,
         tags: splitTags(tags),
         sourceUrl: sourceUrl.trim() || null,
@@ -178,6 +198,8 @@ export default function Upload() {
         name: displayName,
         type: fileType,
         thumbnailPath: `/${thumbnailKey}`,
+        originalPath: `/${assetKey}`,
+        previewPath,
         folderId: folderId || null,
         tags: splitTags(tags),
         createdBy: 'local-user',
@@ -189,9 +211,8 @@ export default function Upload() {
       await putAssetMeta(metadata);
       await updateIndex(indexEntry);
 
-      setStatus('アップロード完了');
-      setFile(null);
-      setFolderId('');
+      setUploadProgress(100);
+      navigate(`/asset/${assetId}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'アップロードに失敗しました');
       setStatus(null);
@@ -206,31 +227,43 @@ export default function Upload() {
         <h1 className="text-2xl font-bold">アップロード</h1>
         <p className="text-sm text-text-secondary">画像/動画ファイルをアップロードしてメタデータを登録します。</p>
 
-        <label className="block rounded border border-dashed border-border-primary p-6 text-center">
+        <label
+          className={`flex cursor-pointer flex-col items-center justify-center gap-2 rounded border-2 border-dashed p-8 text-center transition-colors ${
+            isDragOver
+              ? 'border-blue-400 bg-blue-500/10'
+              : 'border-border-primary hover:border-border-primary/60 hover:bg-bg-tertiary'
+          }`}
+          onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+          onDragLeave={() => setIsDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setIsDragOver(false);
+            onSelectFile(e.dataTransfer.files?.[0] ?? null);
+          }}
+        >
           <input
             type="file"
             className="hidden"
             accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime"
             onChange={(e) => onSelectFile(e.target.files?.[0] ?? null)}
           />
-          <span className="text-sm">ここをクリックしてファイル選択（ドラッグ&ドロップ対応）</span>
+          <span className="text-3xl">📁</span>
+          <span className="text-sm font-medium">ここにドロップ、またはクリックしてファイル選択</span>
+          <span className="text-xs text-text-secondary">JPEG / PNG / WebP / GIF / MP4 / WebM / MOV</span>
         </label>
-        <div
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            e.preventDefault();
-            onSelectFile(e.dataTransfer.files?.[0] ?? null);
-          }}
-          className="rounded border border-border-primary p-4 text-center text-xs text-text-secondary"
-        >
-          ここにファイルをドロップ
-        </div>
 
-        {file && (
-          <div className="rounded border border-border-primary p-3 text-sm">
-            <p>選択ファイル: {file.name}</p>
-            <p>種別: {fileType ?? '非対応'}</p>
-            <p>サイズ: {(file.size / (1024 * 1024)).toFixed(2)} MB</p>
+        {file && previewUrl && (
+          <div className="overflow-hidden rounded border border-border-primary">
+            {fileType === 'image' ? (
+              <img src={previewUrl} alt="プレビュー" className="max-h-64 w-full object-contain bg-bg-tertiary" />
+            ) : fileType === 'video' ? (
+              <video src={previewUrl} controls className="max-h-64 w-full bg-black" />
+            ) : null}
+            <div className="border-t border-border-primary p-3 text-xs text-text-secondary">
+              <span>{file.name}</span>
+              <span className="ml-3">{(file.size / (1024 * 1024)).toFixed(2)} MB</span>
+              {fileType === null && <span className="ml-3 text-red-400">非対応形式</span>}
+            </div>
           </div>
         )}
 
@@ -276,6 +309,14 @@ export default function Upload() {
 
         {error && <p className="rounded border border-red-500/50 bg-red-500/10 p-3 text-sm">{error}</p>}
         {status && <p className="rounded border border-border-primary bg-bg-tertiary p-3 text-sm">{status}</p>}
+        {uploadProgress !== null && (
+          <div className="space-y-1">
+            <div className="h-2 w-full rounded bg-bg-primary">
+              <div className="h-2 rounded bg-blue-500" style={{ width: `${uploadProgress}%` }} />
+            </div>
+            <p className="text-xs text-text-secondary">アップロード進捗: {uploadProgress}%</p>
+          </div>
+        )}
 
         <button
           type="button"

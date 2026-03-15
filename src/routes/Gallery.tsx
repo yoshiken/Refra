@@ -19,12 +19,6 @@ function normalizeTagInput(value: string): string[] {
     .filter(Boolean);
 }
 
-interface HoverPreview {
-  asset: AssetIndexEntry;
-  x: number;
-  y: number;
-}
-
 interface ContextState {
   x: number;
   y: number;
@@ -48,7 +42,6 @@ export default function Gallery() {
   const [folderName, setFolderName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [hoverPreview, setHoverPreview] = useState<HoverPreview | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextState | null>(null);
   const [viewportWidth, setViewportWidth] = useState(900);
   const [viewportHeight, setViewportHeight] = useState(600);
@@ -130,8 +123,6 @@ export default function Gallery() {
             compareMode={compareMode}
             isSelectedForCompare={compareIds.includes(asset.id)}
             onToggleCompare={toggleCompare}
-            onHoverStart={(target, x, y) => setHoverPreview({ asset: target, x, y })}
-            onHoverEnd={() => setHoverPreview(null)}
             onContextMenu={(e, target) => {
               e.preventDefault();
               setContextMenu({
@@ -204,6 +195,9 @@ export default function Gallery() {
     const detail = await getAssetMeta(asset.id);
     await deleteFile(detail.data.originalPath.replace(/^\//, ''));
     await deleteFile(detail.data.thumbnailPath.replace(/^\//, ''));
+    if (detail.data.previewPath) {
+      await deleteFile(detail.data.previewPath.replace(/^\//, ''));
+    }
     for (const scene of detail.data.scenes) {
       await deleteFile(scene.clipPath.replace(/^\//, ''));
       await deleteFile(scene.thumbnailPath.replace(/^\//, ''));
@@ -314,16 +308,6 @@ export default function Gallery() {
         </main>
       </div>
 
-      {hoverPreview && (
-        <div
-          className="pointer-events-none fixed z-40 w-72 overflow-hidden rounded border border-border-primary bg-bg-secondary shadow-xl"
-          style={{ left: hoverPreview.x + 16, top: Math.max(16, hoverPreview.y - 120) }}
-        >
-          <img src={hoverPreview.asset.thumbnailPath} alt={hoverPreview.asset.name} className="h-40 w-full object-cover" />
-          <p className="p-2 text-sm">{hoverPreview.asset.name}</p>
-        </div>
-      )}
-
       {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y} items={contextMenu.items} onClose={() => setContextMenu(null)} />}
     </div>
   );
@@ -341,6 +325,8 @@ export default function Gallery() {
       name: asset.name,
       type: asset.type,
       thumbnailPath: asset.thumbnailPath,
+      originalPath: asset.originalPath,
+      previewPath: asset.previewPath,
       folderId: asset.folderId,
       tags: asset.tags,
       createdBy: asset.createdBy,
