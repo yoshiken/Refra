@@ -28,7 +28,6 @@
     └── ストレージ: AWS S3
           ├── /assets/          ... 画像・動画ファイル本体
           ├── /thumbnails/      ... サムネイル画像
-          ├── /scenes/          ... 動画クリップ（シーン）
           ├── /meta/index.json  ... 軽量インデックス（一覧用）
           └── /meta/{assetId}.json ... 個別メタデータ（コメント等含む）
 ```
@@ -42,7 +41,7 @@
 | ローカルDB | IndexedDB (Dexie.js) |
 | ストレージ | AWS S3（本番）/ LocalStack（ローカル開発） |
 | 認証 | AWS Cognito + Google Workspace（本番）/ なし（ローカル） |
-| 動画処理 | ffmpeg.wasm（ブラウザ内） |
+| 動画処理 | Canvas API（サムネイル取得のみ、クリップ生成なし） |
 | ホスティング | S3 + CloudFront（静的サイト配信） |
 
 ### 2.3 ローカル開発環境
@@ -66,7 +65,7 @@
 #### インデックスファイル (`/meta/index.json`)
 ```json
 {
-  "version": 1,
+  "version": 2,
   "updatedAt": "2025-03-14T12:00:00Z",
   "assets": [
     {
@@ -74,11 +73,29 @@
       "name": "表示名",
       "type": "image" | "video",
       "thumbnailPath": "/thumbnails/{id}.webp",
+      "originalPath": "/assets/{id}.{ext}",
+      "previewPath": "/previews/{id}.webm | null",
       "folderId": "folder-uuid | null",
       "tags": ["UI", "演出", "3Dモデル"],
       "createdBy": "Googleアカウント名",
       "createdAt": "2025-03-14T12:00:00Z",
       "updatedAt": "2025-03-14T12:00:00Z"
+    }
+  ],
+  "scenes": [
+    {
+      "id": "scene-uuid",
+      "assetId": "uuid-v4",
+      "assetName": "親アセット表示名",
+      "name": "シーン名",
+      "tags": ["UI", "演出"],
+      "thumbnailPath": "/thumbnails/scenes/{sceneId}.webp",
+      "startTime": 120.5,
+      "endTime": 125.0,
+      "folderId": "folder-uuid | null",
+      "assetType": "image" | "video",
+      "createdBy": "Googleアカウント名",
+      "createdAt": "2025-03-14T12:00:00Z"
     }
   ],
   "folders": [
@@ -101,6 +118,7 @@
   "type": "image" | "video",
   "originalPath": "/assets/{id}.{ext}",
   "thumbnailPath": "/thumbnails/{id}.webp",
+  "previewPath": "/previews/{id}.webm | null",
   "folderId": "folder-uuid | null",
   "tags": ["UI", "演出"],
   "sourceUrl": "https://youtube.com/... | null",
@@ -114,9 +132,12 @@
   "scenes": [
     {
       "id": "scene-uuid",
+      "assetId": "uuid-v4",
+      "name": "シーン名",
+      "tags": ["UI", "演出"],
+      "folderId": "folder-uuid | null",
       "startTime": 120.5,
       "endTime": 125.0,
-      "clipPath": "/scenes/{assetId}/{sceneId}.webm",
       "thumbnailPath": "/thumbnails/scenes/{sceneId}.webp",
       "createdBy": "Googleアカウント名",
       "createdAt": "2025-03-14T12:00:00Z"
@@ -149,7 +170,7 @@
 - `timestamp: 65.3` → 動画の65.3秒地点に紐づくコメント（シークバー上にマーカー表示）
 
 #### 画像の場合
-- アセットとシーンは1:1。`scenes`配列にはアセット全体を示す1エントリのみ
+- アップロード時にシーンを1件自動生成し、`scenes`配列にはアセット全体を示す1エントリが入る
 - `duration`は`null`
 
 ### 3.3 ローカル設定（IndexedDB）
@@ -198,23 +219,23 @@
 └──────────────────────────────────────────────────┘
 ```
 
-**機能:**
+**機能（シーン一覧）:**
 - サムネイルのサイズはスライダーで可変（デフォルト約200px）
 - グリッドはレスポンシブ。サイズに応じて列数が自動調整
-- 各サムネイルにはアセット名、タグがオーバーレイ表示
+- 各サムネイルにはシーン名、タグを表示
 - 動画の場合はサムネイル左下に再生時間を表示
 - **大量表示優先**: 一般的なファイルビューワーより表示密度を高めに
-- 仮想スクロール（react-window等）で大量アセットに対応
+- 仮想スクロール（react-window等）で大量シーンに対応
 
 **インタラクション:**
-- **ホバー**: プレビューがポップアップで拡大表示（画像はそのまま拡大、動画はプレビュー再生）
-- **クリック**: 詳細画面(B)に遷移
-- **右クリック**: コンテキストメニュー（フォルダ移動、タグ編集、削除）
+- 一覧は静止画サムネイルを表示（プレビュー動画は使わない）
+- **クリック**: シーン詳細画面に遷移
+- **右クリック**: コンテキストメニュー（親アセットを開く、フォルダ移動、削除）
 
 **サイドバー:**
 - フォルダツリー（ネスト対応、ユーザーが自由に作成・移動・リネーム可能）
 - タグフィルター（AND/OR切り替え）
-- 検索バー（アセット名、タグで検索）
+- 検索バー（シーン名、タグで検索）
 
 #### (B) 詳細画面（個別アセット）
 
@@ -306,14 +327,15 @@
 **アップロードフロー（動画）:**
 1. ファイル選択/D&D
 2. ブラウザ側で特定フレームからサムネイル生成（video要素 + Canvas API）
-3. アセット名入力、タグ付け、フォルダ選択
-4. オリジナル + サムネイルをS3にアップロード（S3マルチパートアップロード使用）
-5. アップロード後、シーン切り出しUIを表示
+3. Canvas.captureStream() + MediaRecorder(WebM/VP8) で3〜5秒・200px幅の低解像度プレビュー動画を生成
+4. アセット名入力、タグ付け、フォルダ選択
+5. オリジナル + サムネイル + プレビュー動画をS3にアップロード
+6. アップロード後、シーン切り出しUIを表示
    - 開始時間/終了時間を指定
    - ffmpeg.wasmでクリップ生成 → S3にアップロード
    - シーンは後からいつでも追加可能
-6. メタデータJSON作成 → S3にPUT
-7. インデックスJSON更新
+7. メタデータJSON作成 → S3にPUT
+8. インデックスJSON更新
 
 **アップロード制限:**
 - 1ファイルあたりの上限: **無制限**（ストレージ代は許容）
@@ -367,7 +389,21 @@ Canvas API → drawImage (リサイズ) → toBlob('image/webp', 0.8)
 video要素にsrc設定 → seekToTime(1秒目) → canvasにdrawImage → toBlob('image/webp', 0.8)
 ```
 
-### 5.3 シーン切り出し（フロント処理）
+### 5.3 プレビュー動画生成（フロント処理）
+
+動画アップロード時にのみ生成。グリッド上でのインライン自動再生用。
+
+```
+video要素を先頭にシーク → Canvas(200px幅, アスペクト比維持) に描画
+→ canvas.captureStream() + MediaRecorder(video/webm;codecs=vp8, 200kbps)
+→ 最大5秒（動画が5秒未満なら全体） 録画
+→ Blob(video/webm) → S3 /previews/{assetId}.webm
+```
+
+- `previewPath` は動画アセットのみセット。画像は `null`
+- 旧データ（`previewPath: null`）の場合はサムネイル静止画を表示
+
+### 5.4 シーン切り出し（フロント処理）
 
 ```
 ffmpeg.wasm ロード
@@ -393,9 +429,8 @@ refra-{env}/
 │   ├── {assetId}.webp
 │   └── scenes/
 │       └── {sceneId}.webp
-├── scenes/
-│   └── {assetId}/
-│       └── {sceneId}.webm
+├── previews/
+│   └── {assetId}.webm        ... 動画アセット用低解像度プレビュー（3〜5秒、200px幅）
 └── meta/
     ├── index.json
     └── {assetId}.json

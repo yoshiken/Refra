@@ -7,10 +7,9 @@ import ThumbnailCard from '@/components/ThumbnailCard';
 import ContextMenu, { type ContextMenuItem } from '@/components/ContextMenu';
 import { addCompareAsset, clearCompareAssets, getCompareAssets } from '@/stores/compareStore';
 import { getSettings } from '@/stores/settingsStore';
-import { getAssetMeta, getIndex, putAssetMeta, removeFromIndex, saveIndex, updateIndex } from '@/services/metadata';
-import type { AssetMeta } from '@/types';
+import { getAssetMeta, getIndex, putAssetMeta, saveIndex, syncScenesForAsset } from '@/services/metadata';
 import { deleteFile } from '@/services/storage';
-import type { AssetIndexEntry, FolderMeta } from '@/types';
+import type { FolderMeta, SceneIndexEntry } from '@/types';
 
 function normalizeTagInput(value: string): string[] {
   return value
@@ -30,7 +29,7 @@ const CARD_LABEL = 72;
 
 export default function Gallery() {
   const navigate = useNavigate();
-  const [assets, setAssets] = useState<AssetIndexEntry[]>([]);
+  const [scenes, setScenes] = useState<SceneIndexEntry[]>([]);
   const [folders, setFolders] = useState<FolderMeta[]>([]);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -52,7 +51,7 @@ export default function Gallery() {
     setError(null);
     try {
       const [{ data: index }, settings, compare] = await Promise.all([getIndex(), getSettings(), getCompareAssets()]);
-      setAssets(index.assets);
+      setScenes(index.scenes);
       setFolders(index.folders);
       setThumbnailSize(settings.thumbnailSize);
       setCompareIds(compare);
@@ -86,67 +85,92 @@ export default function Gallery() {
   }, []);
 
   const parsedTags = useMemo(() => normalizeTagInput(tagQuery), [tagQuery]);
-  const filteredAssets = useMemo(() => {
-    return assets.filter((asset) => {
-      const byFolder = selectedFolderId === null || asset.folderId === selectedFolderId;
+  const filteredScenes = useMemo(() => {
+    return scenes.filter((scene) => {
+      const byFolder = selectedFolderId === null || scene.folderId === selectedFolderId;
       const q = search.trim().toLowerCase();
       const bySearch =
         q.length === 0 ||
-        asset.name.toLowerCase().includes(q) ||
-        asset.tags.some((tag) => tag.toLowerCase().includes(q));
+        scene.name.toLowerCase().includes(q) ||
+        scene.tags.some((tag) => tag.toLowerCase().includes(q));
       const byTags =
         parsedTags.length === 0 ||
         (tagMode === 'AND'
-          ? parsedTags.every((tag) => asset.tags.includes(tag))
-          : parsedTags.some((tag) => asset.tags.includes(tag)));
+          ? parsedTags.every((tag) => scene.tags.includes(tag))
+          : parsedTags.some((tag) => scene.tags.includes(tag)));
       return byFolder && bySearch && byTags;
     });
-  }, [assets, selectedFolderId, search, parsedTags, tagMode]);
+  }, [scenes, selectedFolderId, search, parsedTags, tagMode]);
 
   const rowHeight = thumbnailSize + CARD_LABEL;
   const columnCount = Math.max(1, Math.floor(viewportWidth / (thumbnailSize + CARD_PADDING)));
-  const rowCount = Math.ceil(filteredAssets.length / columnCount);
+  const rowCount = Math.ceil(filteredScenes.length / columnCount);
 
   const Row = ({ index, style }: RowComponentProps<object>) => {
     const start = index * columnCount;
-    const rowAssets = filteredAssets.slice(start, start + columnCount);
+    const rowScenes = filteredScenes.slice(start, start + columnCount);
     return (
       <div
         style={{ ...style, gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))` }}
         className="grid gap-2 px-1"
         aria-label={`row-${index}`}
       >
-        {rowAssets.map((asset) => (
+        {rowScenes.map((scene) => (
           <ThumbnailCard
-            key={asset.id}
-            asset={asset}
+            key={scene.id}
+            scene={scene}
             compareMode={compareMode}
-            isSelectedForCompare={compareIds.includes(asset.id)}
+            isSelectedForCompare={compareIds.includes(scene.assetId)}
             onToggleCompare={toggleCompare}
-            onContextMenu={(e, target) => {
+            onContextMenu={(e, targetScene) => {
               e.preventDefault();
               setContextMenu({
                 x: e.clientX,
                 y: e.clientY,
                 items: [
                   {
+                    label: '親アセットを開く',
+                    onClick: () => navigate(`/asset/${targetScene.assetId}`),
+                  },
+                  {
                     label: 'フォルダ移動',
                     onClick: async () => {
-                      const nextFolderId = window.prompt('移動先フォルダID（空で解除）', target.folderId ?? '');
+                      const nextFolderId = window.prompt('移動先フォルダID（空で解除）', targetScene.folderId ?? '');
                       if (nextFolderId === null) return;
-                      const detail = await getAssetMeta(target.id);
-                      await putAssetToFolder(detail.data, nextFolderId.trim() || null);
+                      const detail = await getAssetMeta(targetScene.assetId);
+                      const updatedScenes = detail.data.scenes.map((sceneItem) =>
+                        sceneItem.id === targetScene.id
+                          ? { ...sceneItem, folderId: nextFolderId.trim() || null }
+                          : sceneItem
+                      );
+                      const next = {
+                        ...detail.data,
+                        scenes: updatedScenes,
+                        updatedAt: new Date().toISOString(),
+                      };
+                      await putAssetMeta(next);
+                      await syncScenesForAsset(next.id, next.name, next.type, next.scenes);
                       await fetchAll();
                     },
                   },
                   {
-                    label: 'タグ編集',
-                    onClick: () => navigate(`/asset/${target.id}`),
-                  },
-                  {
                     label: '削除',
-                    onClick: () => {
-                      void deleteFromGallery(target);
+                    onClick: async () => {
+                      const ok = window.confirm(`「${targetScene.name}」を削除しますか？`);
+                      if (!ok) return;
+                      const detail = await getAssetMeta(targetScene.assetId);
+                      if (targetScene.thumbnailPath !== detail.data.thumbnailPath) {
+                        await deleteFile(targetScene.thumbnailPath.replace(/^\//, ''));
+                      }
+                      const updatedScenes = detail.data.scenes.filter((sceneItem) => sceneItem.id !== targetScene.id);
+                      const next = {
+                        ...detail.data,
+                        scenes: updatedScenes,
+                        updatedAt: new Date().toISOString(),
+                      };
+                      await putAssetMeta(next);
+                      await syncScenesForAsset(next.id, next.name, next.type, next.scenes);
+                      await fetchAll();
                     },
                     danger: true,
                   },
@@ -180,31 +204,13 @@ export default function Gallery() {
     }
   };
 
-  const toggleCompare = async (assetId: string) => {
+  const toggleCompare = async (id: string) => {
     try {
-      const next = await addCompareAsset(assetId);
+      const next = await addCompareAsset(id);
       setCompareIds(next);
     } catch (e) {
       setError(e instanceof Error ? e.message : '比較モード更新に失敗しました');
     }
-  };
-
-  const deleteFromGallery = async (asset: AssetIndexEntry) => {
-    const ok = window.confirm(`「${asset.name}」を削除しますか？`);
-    if (!ok) return;
-    const detail = await getAssetMeta(asset.id);
-    await deleteFile(detail.data.originalPath.replace(/^\//, ''));
-    await deleteFile(detail.data.thumbnailPath.replace(/^\//, ''));
-    if (detail.data.previewPath) {
-      await deleteFile(detail.data.previewPath.replace(/^\//, ''));
-    }
-    for (const scene of detail.data.scenes) {
-      await deleteFile(scene.clipPath.replace(/^\//, ''));
-      await deleteFile(scene.thumbnailPath.replace(/^\//, ''));
-    }
-    await deleteFile(`meta/${asset.id}.json`);
-    await removeFromIndex(asset.id);
-    await fetchAll();
   };
 
   return (
@@ -292,8 +298,8 @@ export default function Gallery() {
         <main className="rounded border border-border-primary bg-bg-secondary p-3">
           {loading ? (
             <p className="text-sm text-text-secondary">読み込み中...</p>
-          ) : filteredAssets.length === 0 ? (
-            <p className="text-sm text-text-secondary">該当アセットがありません。</p>
+          ) : filteredScenes.length === 0 ? (
+            <p className="text-sm text-text-secondary">シーンがありません。</p>
           ) : (
             <div ref={viewportRef} className="h-[calc(100vh-190px)]">
               <List
@@ -311,27 +317,4 @@ export default function Gallery() {
       {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y} items={contextMenu.items} onClose={() => setContextMenu(null)} />}
     </div>
   );
-
-  async function putAssetToFolder(asset: AssetMeta, folderId: string | null) {
-    const updatedAt = new Date().toISOString();
-    const next = { ...asset, folderId, updatedAt };
-    await saveIndexEntry(next);
-  }
-
-  async function saveIndexEntry(asset: AssetMeta) {
-    await putAssetMeta(asset);
-    await updateIndex({
-      id: asset.id,
-      name: asset.name,
-      type: asset.type,
-      thumbnailPath: asset.thumbnailPath,
-      originalPath: asset.originalPath,
-      previewPath: asset.previewPath,
-      folderId: asset.folderId,
-      tags: asset.tags,
-      createdBy: asset.createdBy,
-      createdAt: asset.createdAt,
-      updatedAt: asset.updatedAt,
-    });
-  }
 }

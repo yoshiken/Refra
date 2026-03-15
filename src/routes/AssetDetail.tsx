@@ -1,12 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { deleteFile } from '@/services/storage';
-import { getAssetMeta, putAssetMeta, removeFromIndex, updateIndex } from '@/services/metadata';
+import { getAssetMeta, getIndex, putAssetMeta, removeFromIndex, syncScenesForAsset, updateIndex } from '@/services/metadata';
 import { getS3Url } from '@/lib/s3Client';
-import type { AssetMeta, CommentMeta } from '@/types';
+import type { AssetMeta, CommentMeta, FolderMeta, SceneMeta } from '@/types';
 import ImageViewer from '@/components/ImageViewer';
 import CommentPanel from '@/components/CommentPanel';
-import VideoPlayer from '@/components/VideoPlayer';
+import VideoPlayer, { type VideoPlayerRef } from '@/components/VideoPlayer';
 import SceneEditor from '@/components/SceneEditor';
 
 export default function AssetDetail() {
@@ -17,19 +17,23 @@ export default function AssetDetail() {
   const [tagInput, setTagInput] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loopScene, setLoopScene] = useState<SceneMeta | null>(null);
+  const [folders, setFolders] = useState<FolderMeta[]>([]);
+  const videoRef = useRef<VideoPlayerRef>(null);
 
   useEffect(() => {
     if (!id) return;
     void (async () => {
       setLoading(true);
-      setError(null);
-      try {
-        const res = await getAssetMeta(id);
-        setAsset(res.data);
-        setEtag(res.etag);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : '詳細取得に失敗しました');
-      } finally {
+        setError(null);
+        try {
+          const [assetRes, indexRes] = await Promise.all([getAssetMeta(id), getIndex()]);
+          setAsset(assetRes.data);
+          setEtag(assetRes.etag);
+          setFolders(indexRes.data.folders);
+        } catch (e) {
+          setError(e instanceof Error ? e.message : '詳細取得に失敗しました');
+        } finally {
         setLoading(false);
       }
     })();
@@ -50,6 +54,7 @@ export default function AssetDetail() {
       createdAt: next.createdAt,
       updatedAt: next.updatedAt,
     });
+    await syncScenesForAsset(next.id, next.name, next.type, next.scenes);
     const latest = await getAssetMeta(next.id);
     setAsset(latest.data);
     setEtag(latest.etag);
@@ -77,7 +82,6 @@ export default function AssetDetail() {
       await deleteFile(asset.previewPath.replace(/^\//, ''));
     }
     for (const scene of asset.scenes) {
-      await deleteFile(scene.clipPath.replace(/^\//, ''));
       await deleteFile(scene.thumbnailPath.replace(/^\//, ''));
     }
     await deleteFile(`meta/${asset.id}.json`);
@@ -156,12 +160,19 @@ export default function AssetDetail() {
               <ImageViewer src={getS3Url(asset.originalPath)} alt={asset.name} />
             ) : (
               <VideoPlayer
+                ref={videoRef}
                 src={getS3Url(asset.originalPath)}
                 comments={asset.comments}
                 scenes={asset.scenes}
                 duration={asset.duration}
                 autoPlay
                 loop
+                muted
+                onTimeUpdate={(t) => {
+                  if (loopScene && t >= loopScene.endTime) {
+                    videoRef.current?.seek(loopScene.startTime);
+                  }
+                }}
               />
             )}
             {asset.sourceUrlMeta ? (
@@ -187,6 +198,12 @@ export default function AssetDetail() {
               onUpdate={async (next) => {
                 await saveMeta(next);
               }}
+              onPlayScene={(scene) => {
+                setLoopScene(scene);
+                videoRef.current?.seek(scene.startTime);
+                videoRef.current?.play();
+              }}
+              folders={folders}
             />
           </section>
           <CommentPanel

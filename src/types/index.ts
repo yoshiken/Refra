@@ -3,6 +3,7 @@ export interface IndexFile {
   version: number;
   updatedAt: string;
   assets: AssetIndexEntry[];
+  scenes: SceneIndexEntry[];
   folders: FolderMeta[];
 }
 
@@ -11,6 +12,8 @@ export interface AssetIndexEntry {
   name: string;
   type: 'image' | 'video';
   thumbnailPath: string;
+  originalPath: string;
+  previewPath: string | null;
   folderId: string | null;
   tags: string[];
   createdBy: string;
@@ -33,6 +36,7 @@ export interface AssetMeta {
   type: 'image' | 'video';
   originalPath: string;
   thumbnailPath: string;
+  previewPath: string | null;
   folderId: string | null;
   tags: string[];
   sourceUrl: string | null;
@@ -54,10 +58,28 @@ export interface SourceUrlMeta {
 
 export interface SceneMeta {
   id: string;
+  assetId: string;
+  name: string;
+  tags: string[];
+  folderId: string | null;
   startTime: number;
   endTime: number;
-  clipPath: string;
   thumbnailPath: string;
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface SceneIndexEntry {
+  id: string;
+  assetId: string;
+  assetName: string;
+  name: string;
+  tags: string[];
+  thumbnailPath: string;
+  startTime: number;
+  endTime: number;
+  folderId: string | null;
+  assetType: 'image' | 'video';
   createdBy: string;
   createdAt: string;
 }

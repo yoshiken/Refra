@@ -2,8 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { uploadFile } from '@/services/storage';
 import { generateImageThumbnail, generateVideoPreview, generateVideoThumbnail } from '@/services/thumbnail';
-import { getIndex, putAssetMeta, updateIndex } from '@/services/metadata';
-import type { AssetMeta, AssetIndexEntry, FolderMeta } from '@/types';
+import { getIndex, putAssetMeta, syncScenesForAsset, updateIndex } from '@/services/metadata';
+import type { AssetMeta, AssetIndexEntry, FolderMeta, SceneMeta } from '@/types';
 
 const SUPPORTED_IMAGE = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 const SUPPORTED_VIDEO = ['video/mp4', 'video/webm', 'video/quicktime'];
@@ -166,6 +166,21 @@ export default function Upload() {
       }
 
       const previewPath = previewBlob ? `/${previewKey}` : null;
+      const baseTags = splitTags(tags);
+      const scenes: SceneMeta[] = fileType === 'image'
+        ? [{
+            id: crypto.randomUUID(),
+            assetId,
+            name: displayName,
+            tags: baseTags,
+            folderId: folderId || null,
+            startTime: 0,
+            endTime: 0,
+            thumbnailPath: `/${thumbnailKey}`,
+            createdBy: 'local-user',
+            createdAt: now,
+          }]
+        : [];
 
       const metadata: AssetMeta = {
         id: assetId,
@@ -175,7 +190,7 @@ export default function Upload() {
         thumbnailPath: `/${thumbnailKey}`,
         previewPath,
         folderId: folderId || null,
-        tags: splitTags(tags),
+        tags: baseTags,
         sourceUrl: sourceUrl.trim() || null,
         sourceUrlMeta: sourceUrl.trim()
           ? {
@@ -186,7 +201,7 @@ export default function Upload() {
           : null,
         resolution,
         duration,
-        scenes: [],
+        scenes,
         comments: [],
         createdBy: 'local-user',
         createdAt: now,
@@ -201,7 +216,7 @@ export default function Upload() {
         originalPath: `/${assetKey}`,
         previewPath,
         folderId: folderId || null,
-        tags: splitTags(tags),
+        tags: baseTags,
         createdBy: 'local-user',
         createdAt: now,
         updatedAt: now,
@@ -210,6 +225,7 @@ export default function Upload() {
       setStatus('メタデータ更新中...');
       await putAssetMeta(metadata);
       await updateIndex(indexEntry);
+      await syncScenesForAsset(assetId, displayName, fileType, metadata.scenes);
 
       setUploadProgress(100);
       navigate(`/asset/${assetId}`);

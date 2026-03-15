@@ -5,6 +5,7 @@ import AssetDetail from '@/routes/AssetDetail';
 import Settings from '@/routes/Settings';
 import Upload from '@/routes/Upload';
 import Compare from '@/routes/Compare';
+import SceneDetail from '@/routes/SceneDetail';
 import { getSettings } from '@/stores/settingsStore';
 import Layout from '@/components/Layout';
 
@@ -22,6 +23,7 @@ export default function App() {
         <Route element={<Layout />}>
           <Route path="/" element={<Gallery />} />
           <Route path="/asset/:id" element={<AssetDetail />} />
+          <Route path="/scene/:assetId/:sceneId" element={<SceneDetail />} />
           <Route path="/upload" element={<Upload />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/compare" element={<Compare />} />

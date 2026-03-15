@@ -1,42 +1,74 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { getS3Url } from '@/lib/s3Client';
-import { cutScene } from '@/services/videoProcessor';
 import { uploadFile, deleteFile } from '@/services/storage';
-import { generateVideoThumbnail } from '@/services/thumbnail';
-import type { AssetMeta, SceneMeta } from '@/types';
+import type { AssetMeta, FolderMeta, SceneMeta } from '@/types';
 
 interface SceneEditorProps {
   asset: AssetMeta;
   onUpdate: (nextAsset: AssetMeta) => Promise<void>;
+  onPlayScene: (scene: SceneMeta) => void;
+  folders: FolderMeta[];
 }
 
-function createFileFromBlob(blob: Blob, name: string): File {
-  return new File([blob], name, { type: blob.type || 'video/webm' });
-}
-
-async function loadVideoFromBlob(blob: Blob): Promise<HTMLVideoElement> {
+async function captureFrameAt(videoSrc: string, timeSeconds: number): Promise<Blob> {
   return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(blob);
     const video = document.createElement('video');
-    video.preload = 'metadata';
+    video.crossOrigin = 'anonymous';
     video.muted = true;
-    video.onloadedmetadata = () => {
-      resolve(video);
+    video.preload = 'metadata';
+
+    const cleanup = () => {
+      video.removeEventListener('loadedmetadata', onLoadedMetadata);
+      video.removeEventListener('seeked', onSeeked);
+      video.removeEventListener('error', onError);
     };
-    video.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error('シーン動画の読み込みに失敗しました'));
+
+    const onError = () => {
+      cleanup();
+      reject(new Error('サムネイル用の動画読み込みに失敗しました'));
     };
-    video.src = url;
+
+    const onSeeked = () => {
+      cleanup();
+      if (video.videoWidth === 0 || video.videoHeight === 0) {
+        reject(new Error('Invalid video size'));
+        return;
+      }
+      const targetWidth = 200;
+      const targetHeight = Math.round((video.videoHeight / video.videoWidth) * targetWidth);
+      const canvas = document.createElement('canvas');
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { reject(new Error('Canvas not supported')); return; }
+      ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+      canvas.toBlob((blob) => {
+        if (!blob) { reject(new Error('フレームキャプチャに失敗しました')); return; }
+        resolve(blob);
+      }, 'image/webp', 0.8);
+    };
+
+    const onLoadedMetadata = () => {
+      video.currentTime = timeSeconds;
+    };
+
+    video.addEventListener('loadedmetadata', onLoadedMetadata);
+    video.addEventListener('seeked', onSeeked);
+    video.addEventListener('error', onError);
+    video.src = videoSrc;
+    video.load();
   });
 }
 
-export default function SceneEditor({ asset, onUpdate }: SceneEditorProps) {
+export default function SceneEditor({ asset, onUpdate, onPlayScene, folders }: SceneEditorProps) {
   const [startTime, setStartTime] = useState(0);
   const [endTime, setEndTime] = useState(5);
-  const [progress, setProgress] = useState<number | null>(null);
+  const [sceneName, setSceneName] = useState('');
+  const [sceneTags, setSceneTags] = useState('');
+  const [sceneFolderId, setSceneFolderId] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [isCutting, setIsCutting] = useState(false);
+  const [isAdding, setIsAdding] = useState(false);
+  const activeSceneIdRef = useRef<string | null>(null);
 
   const sortedScenes = useMemo(
     () => [...asset.scenes].sort((a, b) => a.startTime - b.startTime),
@@ -51,30 +83,22 @@ export default function SceneEditor({ asset, onUpdate }: SceneEditorProps) {
     }
 
     setError(null);
-    setIsCutting(true);
-    setProgress(0);
+    setIsAdding(true);
     try {
-      const response = await fetch(getS3Url(asset.originalPath));
-      const sourceBlob = await response.blob();
-      const sourceFile = createFileFromBlob(sourceBlob, `${asset.id}.mp4`);
-      const clipBlob = await cutScene(sourceFile, startTime, endTime, (ratio) => {
-        setProgress(Math.round(ratio * 100));
-      });
-
       const sceneId = crypto.randomUUID();
-      const clipKey = `scenes/${asset.id}/${sceneId}.webm`;
       const thumbKey = `thumbnails/scenes/${sceneId}.webp`;
-      await uploadFile(clipKey, clipBlob);
 
-      const video = await loadVideoFromBlob(clipBlob);
-      const sceneThumb = await generateVideoThumbnail(video);
-      await uploadFile(thumbKey, sceneThumb);
+      const thumbBlob = await captureFrameAt(getS3Url(asset.originalPath), startTime);
+      await uploadFile(thumbKey, thumbBlob);
 
       const newScene: SceneMeta = {
         id: sceneId,
+        assetId: asset.id,
+        name: sceneName.trim() || `Scene ${asset.scenes.length + 1}`,
+        tags: sceneTags.split(',').map((tag) => tag.trim()).filter(Boolean),
+        folderId: sceneFolderId || null,
         startTime,
         endTime,
-        clipPath: `/${clipKey}`,
         thumbnailPath: `/${thumbKey}`,
         createdBy: 'local-user',
         createdAt: new Date().toISOString(),
@@ -85,18 +109,22 @@ export default function SceneEditor({ asset, onUpdate }: SceneEditorProps) {
         scenes: [...asset.scenes, newScene],
         updatedAt: new Date().toISOString(),
       });
-      setProgress(100);
+      setSceneName('');
+      setSceneTags('');
+      setSceneFolderId('');
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'シーン切り出しに失敗しました');
-      setProgress(null);
+      console.error('[SceneEditor] addScene failed:', e);
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setIsCutting(false);
+      setIsAdding(false);
     }
   };
 
   const removeScene = async (scene: SceneMeta) => {
-    await deleteFile(scene.clipPath.replace(/^\//, ''));
     await deleteFile(scene.thumbnailPath.replace(/^\//, ''));
+    if (activeSceneIdRef.current === scene.id) {
+      activeSceneIdRef.current = null;
+    }
     await onUpdate({
       ...asset,
       scenes: asset.scenes.filter((item) => item.id !== scene.id),
@@ -104,12 +132,16 @@ export default function SceneEditor({ asset, onUpdate }: SceneEditorProps) {
     });
   };
 
+  const handlePlayScene = (scene: SceneMeta) => {
+    activeSceneIdRef.current = scene.id;
+    onPlayScene(scene);
+  };
+
   if (asset.type !== 'video') return null;
 
   return (
     <section className="mt-4 rounded border border-border-primary bg-bg-secondary p-4">
       <h2 className="mb-3 text-lg font-semibold">シーン一覧</h2>
-      <p className="mb-3 text-xs text-text-secondary">大きな動画では切り出しに時間がかかる場合があります。</p>
 
       <div className="mb-4 grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
         <input
@@ -132,36 +164,64 @@ export default function SceneEditor({ asset, onUpdate }: SceneEditorProps) {
         />
         <button
           type="button"
-          disabled={isCutting}
+          disabled={isAdding}
           onClick={() => void addScene()}
           className="rounded bg-bg-tertiary px-3 py-2 text-sm font-semibold disabled:opacity-60"
         >
-          {isCutting ? '切り出し中...' : 'シーン追加'}
+          {isAdding ? '追加中...' : 'シーン追加'}
         </button>
       </div>
+      <div className="mb-4 grid gap-2 sm:grid-cols-3">
+        <input
+          type="text"
+          value={sceneName}
+          onChange={(e) => setSceneName(e.target.value)}
+          className="rounded border border-border-primary bg-bg-primary px-2 py-1 text-sm"
+          placeholder="シーン名（省略可）"
+        />
+        <input
+          type="text"
+          value={sceneTags}
+          onChange={(e) => setSceneTags(e.target.value)}
+          className="rounded border border-border-primary bg-bg-primary px-2 py-1 text-sm"
+          placeholder="タグ（カンマ区切り）"
+        />
+        <select
+          value={sceneFolderId}
+          onChange={(e) => setSceneFolderId(e.target.value)}
+          className="rounded border border-border-primary bg-bg-primary px-2 py-1 text-sm"
+        >
+          <option value="">フォルダ未選択</option>
+          {folders.map((folder) => (
+            <option key={folder.id} value={folder.id}>
+              {folder.name}
+            </option>
+          ))}
+        </select>
+      </div>
 
-      {progress !== null && (
-        <div className="mb-3 space-y-1">
-          <div className="h-2 w-full rounded bg-bg-primary">
-            <div className="h-2 rounded bg-blue-500" style={{ width: `${progress}%` }} />
-          </div>
-          <p className="text-xs text-text-secondary">進捗: {progress}%</p>
-        </div>
-      )}
       {error && <p className="mb-3 rounded border border-red-500/50 bg-red-500/10 p-2 text-xs">{error}</p>}
 
       <div className="space-y-2">
         {sortedScenes.map((scene) => (
-          <article key={scene.id} className="grid items-center gap-2 rounded border border-border-primary p-2 sm:grid-cols-[88px_1fr_auto]">
+          <article key={scene.id} className="grid items-center gap-2 rounded border border-border-primary p-2 sm:grid-cols-[88px_1fr_auto_auto]">
             <img src={getS3Url(scene.thumbnailPath)} alt="scene thumbnail" className="h-14 w-20 rounded object-cover" />
             <div className="text-xs">
+              <p className="font-medium">{scene.name}</p>
               <p>
                 {scene.startTime.toFixed(1)}s - {scene.endTime.toFixed(1)}s
               </p>
-              <a href={getS3Url(scene.clipPath)} target="_blank" rel="noreferrer" className="underline text-text-secondary">
-                再生
-              </a>
+              {scene.tags.length > 0 && (
+                <p className="text-text-secondary">{scene.tags.join(', ')}</p>
+              )}
             </div>
+            <button
+              type="button"
+              className="rounded border border-border-primary px-2 py-1 text-xs"
+              onClick={() => handlePlayScene(scene)}
+            >
+              再生
+            </button>
             <button
               type="button"
               className="rounded border border-red-500 px-2 py-1 text-xs text-red-500"
