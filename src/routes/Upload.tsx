@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { uploadFile } from '@/services/storage';
 import { generateImageThumbnail, generateVideoThumbnail } from '@/services/thumbnail';
 import { getIndex, putAssetMeta, updateIndex } from '@/services/metadata';
@@ -41,10 +40,35 @@ function loadVideo(file: File): Promise<HTMLVideoElement> {
     const url = URL.createObjectURL(file);
     const video = document.createElement('video');
     video.preload = 'metadata';
-    video.onloadedmetadata = () => resolve(video);
-    video.onerror = () => reject(new Error('動画の読み込みに失敗しました'));
+    video.onloadedmetadata = () => {
+      URL.revokeObjectURL(url);
+      resolve(video);
+    };
+    video.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('動画の読み込みに失敗しました'));
+    };
     video.src = url;
   });
+}
+
+function getImageMeta(image: HTMLImageElement): { resolution: { width: number; height: number } } {
+  return {
+    resolution: {
+      width: image.naturalWidth,
+      height: image.naturalHeight,
+    },
+  };
+}
+
+function getVideoMeta(video: HTMLVideoElement): {
+  duration: number;
+  resolution: { width: number; height: number };
+} {
+  return {
+    duration: video.duration,
+    resolution: { width: video.videoWidth, height: video.videoHeight },
+  };
 }
 
 export default function Upload() {
@@ -60,8 +84,12 @@ export default function Upload() {
 
   useEffect(() => {
     void (async () => {
-      const { data } = await getIndex();
-      setFolders(data.folders);
+      try {
+        const { data } = await getIndex();
+        setFolders(data.folders);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'フォルダ取得に失敗しました');
+      }
     })();
   }, []);
 
@@ -100,10 +128,21 @@ export default function Upload() {
     setStatus('サムネイル生成中...');
 
     try {
-      const thumbnailBlob =
-        fileType === 'image'
-          ? await generateImageThumbnail(await loadImage(file))
-          : await generateVideoThumbnail(await loadVideo(file));
+      let duration: number | null = null;
+      let resolution: { width: number; height: number } | null = null;
+      let thumbnailBlob: Blob;
+
+      if (fileType === 'image') {
+        const image = await loadImage(file);
+        thumbnailBlob = await generateImageThumbnail(image);
+        resolution = getImageMeta(image).resolution;
+      } else {
+        const video = await loadVideo(file);
+        thumbnailBlob = await generateVideoThumbnail(video);
+        const videoMeta = getVideoMeta(video);
+        duration = videoMeta.duration;
+        resolution = videoMeta.resolution;
+      }
 
       setStatus('S3へアップロード中...');
       await uploadFile(assetKey, file);
@@ -125,8 +164,8 @@ export default function Upload() {
               url: sourceUrl.trim(),
             }
           : null,
-        resolution: null,
-        duration: null,
+        resolution,
+        duration,
         scenes: [],
         comments: [],
         createdBy: 'local-user',
@@ -162,17 +201,12 @@ export default function Upload() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-950 p-8 text-white">
-      <header className="mb-6">
-        <Link to="/" className="text-sm text-gray-300 hover:underline">
-          ← ギャラリーへ戻る
-        </Link>
-      </header>
-      <main className="mx-auto max-w-2xl space-y-4 rounded border border-gray-800 bg-gray-900 p-6">
+    <div className="p-8">
+      <main className="mx-auto max-w-2xl space-y-4 rounded border border-border-primary bg-bg-secondary p-6">
         <h1 className="text-2xl font-bold">アップロード</h1>
-        <p className="text-sm text-gray-400">画像/動画ファイルをアップロードしてメタデータを登録します。</p>
+        <p className="text-sm text-text-secondary">画像/動画ファイルをアップロードしてメタデータを登録します。</p>
 
-        <label className="block rounded border border-dashed border-gray-700 p-6 text-center">
+        <label className="block rounded border border-dashed border-border-primary p-6 text-center">
           <input
             type="file"
             className="hidden"
@@ -187,13 +221,13 @@ export default function Upload() {
             e.preventDefault();
             onSelectFile(e.dataTransfer.files?.[0] ?? null);
           }}
-          className="rounded border border-gray-800 p-4 text-center text-xs text-gray-400"
+          className="rounded border border-border-primary p-4 text-center text-xs text-text-secondary"
         >
           ここにファイルをドロップ
         </div>
 
         {file && (
-          <div className="rounded border border-gray-700 p-3 text-sm">
+          <div className="rounded border border-border-primary p-3 text-sm">
             <p>選択ファイル: {file.name}</p>
             <p>種別: {fileType ?? '非対応'}</p>
             <p>サイズ: {(file.size / (1024 * 1024)).toFixed(2)} MB</p>
@@ -203,7 +237,7 @@ export default function Upload() {
         <label className="block text-sm">
           表示名
           <input
-            className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2"
+            className="mt-1 w-full rounded border border-border-primary bg-bg-primary px-3 py-2"
             value={name}
             onChange={(e) => setName(e.target.value)}
           />
@@ -211,7 +245,7 @@ export default function Upload() {
         <label className="block text-sm">
           タグ（カンマ区切り）
           <input
-            className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2"
+            className="mt-1 w-full rounded border border-border-primary bg-bg-primary px-3 py-2"
             value={tags}
             onChange={(e) => setTags(e.target.value)}
           />
@@ -219,7 +253,7 @@ export default function Upload() {
         <label className="block text-sm">
           フォルダ
           <select
-            className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2"
+            className="mt-1 w-full rounded border border-border-primary bg-bg-primary px-3 py-2"
             value={folderId}
             onChange={(e) => setFolderId(e.target.value)}
           >
@@ -234,20 +268,20 @@ export default function Upload() {
         <label className="block text-sm">
           引用元URL（任意）
           <input
-            className="mt-1 w-full rounded border border-gray-700 bg-gray-950 px-3 py-2"
+            className="mt-1 w-full rounded border border-border-primary bg-bg-primary px-3 py-2"
             value={sourceUrl}
             onChange={(e) => setSourceUrl(e.target.value)}
           />
         </label>
 
-        {error && <p className="rounded border border-red-600 bg-red-950/50 p-3 text-sm">{error}</p>}
-        {status && <p className="rounded border border-blue-700 bg-blue-950/40 p-3 text-sm">{status}</p>}
+        {error && <p className="rounded border border-red-500/50 bg-red-500/10 p-3 text-sm">{error}</p>}
+        {status && <p className="rounded border border-border-primary bg-bg-tertiary p-3 text-sm">{status}</p>}
 
         <button
           type="button"
           onClick={() => void handleUpload()}
           disabled={isUploading || !file}
-          className="rounded bg-gray-200 px-4 py-2 text-sm font-semibold text-gray-900 disabled:opacity-60"
+          className="rounded bg-bg-tertiary px-4 py-2 text-sm font-semibold disabled:opacity-60"
         >
           {isUploading ? 'アップロード中...' : 'アップロード開始'}
         </button>

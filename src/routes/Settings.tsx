@@ -1,4 +1,3 @@
-import { Link } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { getSettings, updateSettings } from '@/stores/settingsStore';
 import type { LocalSettings } from '@/types';
@@ -39,29 +38,24 @@ export default function Settings() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-950 p-8 text-white">
-      <header className="mb-6">
-        <Link to="/" className="text-sm text-gray-300 hover:underline">
-          ← ギャラリーへ戻る
-        </Link>
-      </header>
-      <main className="mx-auto max-w-xl space-y-4 rounded border border-gray-800 bg-gray-900 p-6">
+    <div className="p-8">
+      <main className="mx-auto max-w-xl space-y-4 rounded border border-border-primary bg-bg-secondary p-6">
         <h1 className="text-2xl font-bold">設定</h1>
-        <p className="text-sm text-gray-400">設定はこのブラウザにのみ保存されます。</p>
+        <p className="text-sm text-text-secondary">設定はこのブラウザにのみ保存されます。</p>
 
         <section className="space-y-2">
           <h2 className="text-sm font-semibold">テーマ</h2>
           <div className="flex gap-2">
             <button
               type="button"
-              className={`rounded px-3 py-2 text-sm ${settings.theme === 'dark' ? 'bg-gray-200 text-gray-900' : 'bg-gray-800'}`}
+              className={`rounded px-3 py-2 text-sm ${settings.theme === 'dark' ? 'bg-bg-tertiary font-semibold' : 'bg-bg-primary'}`}
               onClick={() => void save({ theme: 'dark' })}
             >
               ダーク
             </button>
             <button
               type="button"
-              className={`rounded px-3 py-2 text-sm ${settings.theme === 'light' ? 'bg-gray-200 text-gray-900' : 'bg-gray-800'}`}
+              className={`rounded px-3 py-2 text-sm ${settings.theme === 'light' ? 'bg-bg-tertiary font-semibold' : 'bg-bg-primary'}`}
               onClick={() => void save({ theme: 'light' })}
             >
               ライト
@@ -82,8 +76,8 @@ export default function Settings() {
           />
         </section>
 
-        {status && <p className="rounded border border-blue-700 bg-blue-950/30 p-2 text-xs">{status}</p>}
-        {error && <p className="rounded border border-red-700 bg-red-950/30 p-2 text-xs">{error}</p>}
+        {status && <p className="rounded border border-border-primary bg-bg-tertiary p-2 text-xs">{status}</p>}
+        {error && <p className="rounded border border-red-500/50 bg-red-500/10 p-2 text-xs">{error}</p>}
       </main>
     </div>
   );

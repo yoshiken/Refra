@@ -43,6 +43,8 @@ export async function getAssetMeta(id: string): Promise<{ data: AssetMeta; etag:
 
 export async function putAssetMeta(meta: AssetMeta, etag?: string): Promise<void> {
   if (etag) {
+    // PutObject に If-Match が使えないため、現状は事前に ETag を確認する運用。
+    // この方式は HeadObject → PutObject 間の TOCTOU を完全には防げない。
     const head = await s3Client.send(
       new HeadObjectCommand({ Bucket: BUCKET_NAME, Key: `meta/${meta.id}.json` })
     );
@@ -62,15 +64,9 @@ export async function putAssetMeta(meta: AssetMeta, etag?: string): Promise<void
   );
 }
 
-export async function updateIndex(entry: AssetIndexEntry, etag?: string): Promise<void> {
-  let attempt = 0;
-
-  while (attempt < MAX_RETRIES) {
-    attempt += 1;
-    const { data: index, etag: currentEtag } = await getIndex();
-    if (etag && currentEtag && normalizeEtag(etag) !== currentEtag) {
-      throw new Error('Index conflict: ETag mismatch. Refetch and retry.');
-    }
+export async function updateIndex(entry: AssetIndexEntry): Promise<void> {
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
+    const { data: index } = await getIndex();
 
     const targetIndex = index.assets.findIndex((asset) => asset.id === entry.id);
     if (targetIndex >= 0) {
@@ -91,7 +87,7 @@ export async function updateIndex(entry: AssetIndexEntry, etag?: string): Promis
       );
       return;
     } catch (error) {
-      if (attempt >= MAX_RETRIES) {
+      if (attempt === MAX_RETRIES - 1) {
         throw error;
       }
     }
@@ -116,21 +112,29 @@ export async function saveIndex(index: IndexFile, etag?: string): Promise<void> 
   );
 }
 
-export async function removeFromIndex(assetId: string, etag?: string): Promise<void> {
-  const { data: index, etag: currentEtag } = await getIndex();
-  if (etag && currentEtag && normalizeEtag(etag) !== currentEtag) {
-    throw new Error('Index conflict: ETag mismatch. Refetch and retry.');
+export async function removeFromIndex(assetId: string): Promise<void> {
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
+    const { data: index } = await getIndex();
+
+    index.assets = index.assets.filter((asset) => asset.id !== assetId);
+    index.updatedAt = new Date().toISOString();
+
+    try {
+      await s3Client.send(
+        new PutObjectCommand({
+          Bucket: BUCKET_NAME,
+          Key: 'meta/index.json',
+          Body: JSON.stringify(index),
+          ContentType: 'application/json',
+        })
+      );
+      return;
+    } catch (error) {
+      if (attempt === MAX_RETRIES - 1) {
+        throw error;
+      }
+    }
   }
 
-  index.assets = index.assets.filter((asset) => asset.id !== assetId);
-  index.updatedAt = new Date().toISOString();
-
-  await s3Client.send(
-    new PutObjectCommand({
-      Bucket: BUCKET_NAME,
-      Key: 'meta/index.json',
-      Body: JSON.stringify(index),
-      ContentType: 'application/json',
-    })
-  );
+  throw new Error('Failed to remove index after retries');
 }

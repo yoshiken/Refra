@@ -1,25 +1,7 @@
-import Dexie from 'dexie';
-
-interface CompareSelection {
-  id: 'selection';
-  assetIds: string[];
-}
-
-class CompareDB extends Dexie {
-  compare!: Dexie.Table<CompareSelection, 'selection'>;
-
-  constructor() {
-    super('refra-compare');
-    this.version(1).stores({
-      compare: 'id',
-    });
-  }
-}
-
-const compareDb = new CompareDB();
+import { db } from '@/lib/db';
 
 export async function getCompareAssets(): Promise<string[]> {
-  const record = await compareDb.compare.get('selection');
+  const record = await db.compare.get('selection');
   return record?.assetIds ?? [];
 }
 
@@ -32,12 +14,12 @@ export async function addCompareAsset(assetId: string): Promise<string[]> {
       ? current
       : [...current, assetId];
 
-  await compareDb.compare.put({ id: 'selection', assetIds: next });
+  await db.compare.put({ id: 'selection', assetIds: next });
   return next;
 }
 
 export async function clearCompareAssets(): Promise<string[]> {
   const next: string[] = [];
-  await compareDb.compare.put({ id: 'selection', assetIds: next });
+  await db.compare.put({ id: 'selection', assetIds: next });
   return next;
 }

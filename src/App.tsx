@@ -6,6 +6,7 @@ import Settings from '@/routes/Settings';
 import Upload from '@/routes/Upload';
 import Compare from '@/routes/Compare';
 import { getSettings } from '@/stores/settingsStore';
+import Layout from '@/components/Layout';
 
 export default function App() {
   useEffect(() => {
@@ -18,11 +19,13 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<Gallery />} />
-        <Route path="/asset/:id" element={<AssetDetail />} />
-        <Route path="/upload" element={<Upload />} />
-        <Route path="/settings" element={<Settings />} />
-        <Route path="/compare" element={<Compare />} />
+        <Route element={<Layout />}>
+          <Route path="/" element={<Gallery />} />
+          <Route path="/asset/:id" element={<AssetDetail />} />
+          <Route path="/upload" element={<Upload />} />
+          <Route path="/settings" element={<Settings />} />
+          <Route path="/compare" element={<Compare />} />
+        </Route>
       </Routes>
     </BrowserRouter>
   );

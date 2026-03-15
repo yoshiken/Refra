@@ -1,9 +1,16 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { getIndex, saveIndex } from '@/services/metadata';
-import { getSettings } from '@/stores/settingsStore';
-import type { AssetIndexEntry, FolderMeta } from '@/types';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { List, type RowComponentProps } from 'react-window';
+import FolderTree from '@/components/FolderTree';
+import TagFilter from '@/components/TagFilter';
+import ThumbnailCard from '@/components/ThumbnailCard';
+import ContextMenu, { type ContextMenuItem } from '@/components/ContextMenu';
 import { addCompareAsset, clearCompareAssets, getCompareAssets } from '@/stores/compareStore';
+import { getSettings } from '@/stores/settingsStore';
+import { getAssetMeta, getIndex, putAssetMeta, removeFromIndex, saveIndex, updateIndex } from '@/services/metadata';
+import type { AssetMeta } from '@/types';
+import { deleteFile } from '@/services/storage';
+import type { AssetIndexEntry, FolderMeta } from '@/types';
 
 function normalizeTagInput(value: string): string[] {
   return value
@@ -12,11 +19,26 @@ function normalizeTagInput(value: string): string[] {
     .filter(Boolean);
 }
 
+interface HoverPreview {
+  asset: AssetIndexEntry;
+  x: number;
+  y: number;
+}
+
+interface ContextState {
+  x: number;
+  y: number;
+  items: ContextMenuItem[];
+}
+
+const CARD_PADDING = 14;
+const CARD_LABEL = 72;
+
 export default function Gallery() {
   const navigate = useNavigate();
   const [assets, setAssets] = useState<AssetIndexEntry[]>([]);
   const [folders, setFolders] = useState<FolderMeta[]>([]);
-  const [selectedFolderId, setSelectedFolderId] = useState<string>('all');
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [tagQuery, setTagQuery] = useState('');
   const [tagMode, setTagMode] = useState<'AND' | 'OR'>('OR');
@@ -26,16 +48,17 @@ export default function Gallery() {
   const [folderName, setFolderName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [hoverPreview, setHoverPreview] = useState<HoverPreview | null>(null);
+  const [contextMenu, setContextMenu] = useState<ContextState | null>(null);
+  const [viewportWidth, setViewportWidth] = useState(900);
+  const [viewportHeight, setViewportHeight] = useState(600);
+  const viewportRef = useRef<HTMLDivElement | null>(null);
 
   const fetchAll = async () => {
     setLoading(true);
     setError(null);
     try {
-      const [{ data: index }, settings, compare] = await Promise.all([
-        getIndex(),
-        getSettings(),
-        getCompareAssets(),
-      ]);
+      const [{ data: index }, settings, compare] = await Promise.all([getIndex(), getSettings(), getCompareAssets()]);
       setAssets(index.assets);
       setFolders(index.folders);
       setThumbnailSize(settings.thumbnailSize);
@@ -51,10 +74,28 @@ export default function Gallery() {
     void fetchAll();
   }, []);
 
+  useEffect(() => {
+    if (!viewportRef.current) return;
+    const updateSize = () => {
+      if (!viewportRef.current) return;
+      setViewportWidth(viewportRef.current.clientWidth);
+      setViewportHeight(Math.max(320, window.innerHeight - 180));
+    };
+    updateSize();
+
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(viewportRef.current);
+    window.addEventListener('resize', updateSize);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateSize);
+    };
+  }, []);
+
   const parsedTags = useMemo(() => normalizeTagInput(tagQuery), [tagQuery]);
-  const filtered = useMemo(() => {
+  const filteredAssets = useMemo(() => {
     return assets.filter((asset) => {
-      const byFolder = selectedFolderId === 'all' || asset.folderId === selectedFolderId;
+      const byFolder = selectedFolderId === null || asset.folderId === selectedFolderId;
       const q = search.trim().toLowerCase();
       const bySearch =
         q.length === 0 ||
@@ -67,7 +108,65 @@ export default function Gallery() {
           : parsedTags.some((tag) => asset.tags.includes(tag)));
       return byFolder && bySearch && byTags;
     });
-  }, [assets, parsedTags, search, selectedFolderId, tagMode]);
+  }, [assets, selectedFolderId, search, parsedTags, tagMode]);
+
+  const rowHeight = thumbnailSize + CARD_LABEL;
+  const columnCount = Math.max(1, Math.floor(viewportWidth / (thumbnailSize + CARD_PADDING)));
+  const rowCount = Math.ceil(filteredAssets.length / columnCount);
+
+  const Row = ({ index, style }: RowComponentProps<object>) => {
+    const start = index * columnCount;
+    const rowAssets = filteredAssets.slice(start, start + columnCount);
+    return (
+      <div
+        style={{ ...style, gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))` }}
+        className="grid gap-2 px-1"
+        aria-label={`row-${index}`}
+      >
+        {rowAssets.map((asset) => (
+          <ThumbnailCard
+            key={asset.id}
+            asset={asset}
+            compareMode={compareMode}
+            isSelectedForCompare={compareIds.includes(asset.id)}
+            onToggleCompare={toggleCompare}
+            onHoverStart={(target, x, y) => setHoverPreview({ asset: target, x, y })}
+            onHoverEnd={() => setHoverPreview(null)}
+            onContextMenu={(e, target) => {
+              e.preventDefault();
+              setContextMenu({
+                x: e.clientX,
+                y: e.clientY,
+                items: [
+                  {
+                    label: 'フォルダ移動',
+                    onClick: async () => {
+                      const nextFolderId = window.prompt('移動先フォルダID（空で解除）', target.folderId ?? '');
+                      if (nextFolderId === null) return;
+                      const detail = await getAssetMeta(target.id);
+                      await putAssetToFolder(detail.data, nextFolderId.trim() || null);
+                      await fetchAll();
+                    },
+                  },
+                  {
+                    label: 'タグ編集',
+                    onClick: () => navigate(`/asset/${target.id}`),
+                  },
+                  {
+                    label: '削除',
+                    onClick: () => {
+                      void deleteFromGallery(target);
+                    },
+                    danger: true,
+                  },
+                ],
+              });
+            }}
+          />
+        ))}
+      </div>
+    );
+  };
 
   const createFolder = async () => {
     if (!folderName.trim()) return;
@@ -99,91 +198,59 @@ export default function Gallery() {
     }
   };
 
+  const deleteFromGallery = async (asset: AssetIndexEntry) => {
+    const ok = window.confirm(`「${asset.name}」を削除しますか？`);
+    if (!ok) return;
+    const detail = await getAssetMeta(asset.id);
+    await deleteFile(detail.data.originalPath.replace(/^\//, ''));
+    await deleteFile(detail.data.thumbnailPath.replace(/^\//, ''));
+    for (const scene of detail.data.scenes) {
+      await deleteFile(scene.clipPath.replace(/^\//, ''));
+      await deleteFile(scene.thumbnailPath.replace(/^\//, ''));
+    }
+    await deleteFile(`meta/${asset.id}.json`);
+    await removeFromIndex(asset.id);
+    await fetchAll();
+  };
+
   return (
-    <div className="min-h-screen bg-gray-950 p-6 text-white">
-      <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold">Refra</h1>
-        <nav className="flex gap-3 text-sm">
-          <Link to="/upload" className="rounded border border-gray-700 px-3 py-2 hover:bg-gray-800">
-            アップロード
-          </Link>
-          <Link to="/settings" className="rounded border border-gray-700 px-3 py-2 hover:bg-gray-800">
-            設定
-          </Link>
-          <Link to="/compare" className="rounded border border-gray-700 px-3 py-2 hover:bg-gray-800">
-            比較表示
-          </Link>
-        </nav>
-      </header>
-
-      {error && <p className="mb-4 rounded border border-red-600 bg-red-950/50 p-3 text-sm">{error}</p>}
-
-      <div className="grid gap-4 md:grid-cols-[260px_1fr]">
-        <aside className="space-y-3 rounded border border-gray-800 bg-gray-900 p-4">
+    <div className="p-6">
+      {error && <p className="mb-4 rounded border border-red-500/50 bg-red-500/10 p-3 text-sm">{error}</p>}
+      <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
+        <aside className="space-y-3 rounded border border-border-primary bg-bg-secondary p-4">
           <h2 className="text-base font-semibold">絞り込み</h2>
           <input
-            className="w-full rounded border border-gray-700 bg-gray-950 px-2 py-1 text-sm"
+            className="w-full rounded border border-border-primary bg-bg-primary px-2 py-1 text-sm"
             placeholder="検索（名前・タグ）"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
+
+          <TagFilter
+            tagQuery={tagQuery}
+            tagMode={tagMode}
+            onTagModeChange={setTagMode}
+            onTagQueryChange={setTagQuery}
+          />
+
           <div className="space-y-1">
-            <label className="text-xs text-gray-400">タグ（カンマ区切り）</label>
-            <input
-              className="w-full rounded border border-gray-700 bg-gray-950 px-2 py-1 text-sm"
-              placeholder="UI, 演出"
-              value={tagQuery}
-              onChange={(e) => setTagQuery(e.target.value)}
-            />
-            <div className="flex gap-2 text-xs">
-              <button
-                type="button"
-                className={`rounded px-2 py-1 ${tagMode === 'OR' ? 'bg-gray-200 text-gray-900' : 'bg-gray-800'}`}
-                onClick={() => setTagMode('OR')}
-              >
-                OR
-              </button>
-              <button
-                type="button"
-                className={`rounded px-2 py-1 ${tagMode === 'AND' ? 'bg-gray-200 text-gray-900' : 'bg-gray-800'}`}
-                onClick={() => setTagMode('AND')}
-              >
-                AND
-              </button>
-            </div>
-          </div>
-          <div className="space-y-1">
-            <label className="text-xs text-gray-400">フォルダ</label>
-            <select
-              className="w-full rounded border border-gray-700 bg-gray-950 px-2 py-1 text-sm"
-              value={selectedFolderId}
-              onChange={(e) => setSelectedFolderId(e.target.value)}
-            >
-              <option value="all">すべて</option>
-              {folders.map((folder) => (
-                <option key={folder.id} value={folder.id}>
-                  {folder.name}
-                </option>
-              ))}
-            </select>
+            <label className="text-xs text-text-secondary">フォルダツリー</label>
+            <FolderTree folders={folders} selectedFolderId={selectedFolderId} onSelect={setSelectedFolderId} />
             <div className="flex gap-2">
               <input
-                className="min-w-0 flex-1 rounded border border-gray-700 bg-gray-950 px-2 py-1 text-sm"
+                className="min-w-0 flex-1 rounded border border-border-primary bg-bg-primary px-2 py-1 text-sm"
                 placeholder="新規フォルダ名"
                 value={folderName}
                 onChange={(e) => setFolderName(e.target.value)}
               />
-              <button
-                type="button"
-                onClick={createFolder}
-                className="rounded bg-gray-200 px-2 py-1 text-xs font-semibold text-gray-900"
-              >
+              <button type="button" onClick={createFolder} className="rounded bg-bg-tertiary px-2 py-1 text-xs font-semibold">
                 作成
               </button>
             </div>
           </div>
+
           <div>
-            <label className="text-xs text-gray-400">サムネイルサイズ: {thumbnailSize}px</label>
+            <label className="text-xs text-text-secondary">サムネイルサイズ: {thumbnailSize}px</label>
             <input
               type="range"
               min={120}
@@ -194,32 +261,29 @@ export default function Gallery() {
               className="w-full"
             />
           </div>
+
           <div className="space-y-2">
             <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={compareMode}
-                onChange={(e) => setCompareMode(e.target.checked)}
-              />
+              <input type="checkbox" checked={compareMode} onChange={(e) => setCompareMode(e.target.checked)} />
               比較モード
             </label>
             {compareMode && (
-                <button
-                  type="button"
-                  className="w-full rounded bg-gray-200 px-2 py-2 text-sm font-semibold text-gray-900 disabled:opacity-60"
-                  disabled={compareIds.length === 0}
-                  onClick={() => {
-                    if (compareIds.length === 0) return;
-                    navigate('/compare');
-                  }}
-                >
-                  比較表示へ（{compareIds.length}/4）
-                </button>
+              <button
+                type="button"
+                className="w-full rounded bg-bg-tertiary px-2 py-2 text-sm font-semibold disabled:opacity-60"
+                disabled={compareIds.length === 0}
+                onClick={() => {
+                  if (compareIds.length === 0) return;
+                  navigate('/compare');
+                }}
+              >
+                比較表示へ（{compareIds.length}/4）
+              </button>
             )}
             {compareMode && compareIds.length > 0 && (
               <button
                 type="button"
-                className="w-full rounded border border-gray-700 px-2 py-2 text-xs"
+                className="w-full rounded border border-border-primary px-2 py-2 text-xs"
                 onClick={async () => {
                   const next = await clearCompareAssets();
                   setCompareIds(next);
@@ -231,44 +295,57 @@ export default function Gallery() {
           </div>
         </aside>
 
-        <main>
+        <main className="rounded border border-border-primary bg-bg-secondary p-3">
           {loading ? (
-            <p className="text-sm text-gray-400">読み込み中...</p>
+            <p className="text-sm text-text-secondary">読み込み中...</p>
+          ) : filteredAssets.length === 0 ? (
+            <p className="text-sm text-text-secondary">該当アセットがありません。</p>
           ) : (
-            <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${thumbnailSize}px, 1fr))` }}>
-              {filtered.map((asset) => (
-                <article key={asset.id} className="overflow-hidden rounded border border-gray-800 bg-gray-900">
-                  <Link to={`/asset/${asset.id}`} className="block">
-                    <img
-                      src={asset.thumbnailPath}
-                      alt={asset.name}
-                      className="h-auto w-full bg-gray-800 object-cover"
-                    />
-                  </Link>
-                  <div className="space-y-1 p-2 text-xs">
-                    <p className="truncate font-semibold">{asset.name}</p>
-                    <p className="truncate text-gray-400">{asset.tags.join(', ') || 'タグなし'}</p>
-                    {compareMode && (
-                      <button
-                        type="button"
-                        className={`w-full rounded px-2 py-1 ${
-                          compareIds.includes(asset.id) ? 'bg-gray-200 text-gray-900' : 'bg-gray-800'
-                        }`}
-                        onClick={() => void toggleCompare(asset.id)}
-                      >
-                        {compareIds.includes(asset.id) ? '比較選択済み' : '比較に追加'}
-                      </button>
-                    )}
-                  </div>
-                </article>
-              ))}
-              {!loading && filtered.length === 0 && (
-                <p className="text-sm text-gray-400">該当アセットがありません。</p>
-              )}
+            <div ref={viewportRef} className="h-[calc(100vh-190px)]">
+              <List
+                rowCount={rowCount}
+                rowHeight={rowHeight}
+                rowComponent={Row}
+                rowProps={{}}
+                style={{ height: viewportHeight, width: viewportWidth }}
+              />
             </div>
           )}
         </main>
       </div>
+
+      {hoverPreview && (
+        <div
+          className="pointer-events-none fixed z-40 w-72 overflow-hidden rounded border border-border-primary bg-bg-secondary shadow-xl"
+          style={{ left: hoverPreview.x + 16, top: Math.max(16, hoverPreview.y - 120) }}
+        >
+          <img src={hoverPreview.asset.thumbnailPath} alt={hoverPreview.asset.name} className="h-40 w-full object-cover" />
+          <p className="p-2 text-sm">{hoverPreview.asset.name}</p>
+        </div>
+      )}
+
+      {contextMenu && <ContextMenu x={contextMenu.x} y={contextMenu.y} items={contextMenu.items} onClose={() => setContextMenu(null)} />}
     </div>
   );
+
+  async function putAssetToFolder(asset: AssetMeta, folderId: string | null) {
+    const updatedAt = new Date().toISOString();
+    const next = { ...asset, folderId, updatedAt };
+    await saveIndexEntry(next);
+  }
+
+  async function saveIndexEntry(asset: AssetMeta) {
+    await putAssetMeta(asset);
+    await updateIndex({
+      id: asset.id,
+      name: asset.name,
+      type: asset.type,
+      thumbnailPath: asset.thumbnailPath,
+      folderId: asset.folderId,
+      tags: asset.tags,
+      createdBy: asset.createdBy,
+      createdAt: asset.createdAt,
+      updatedAt: asset.updatedAt,
+    });
+  }
 }
