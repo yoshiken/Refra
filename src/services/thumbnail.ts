@@ -26,7 +26,7 @@ export async function generateImageThumbnail(image: HTMLImageElement): Promise<B
   });
 }
 
-export function generateVideoPreview(video: HTMLVideoElement): Promise<Blob> {
+export function generateScenePreview(video: HTMLVideoElement, startTime: number): Promise<Blob> {
   return new Promise((resolve, reject) => {
     if (video.videoWidth === 0 || video.videoHeight === 0) {
       reject(new Error('Invalid video size'));
@@ -50,19 +50,28 @@ export function generateVideoPreview(video: HTMLVideoElement): Promise<Blob> {
     let stopTimer: number | null = null;
     let animId: number | null = null;
 
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      reject(new Error('Canvas not supported'));
+      return;
+    }
+
+    const maxDuration = Math.min(5, (video.duration || 5) - startTime);
+    const endTime = startTime + maxDuration;
+
+    // リスナーの参照（後でクリーンアップするため先に宣言）
+    let onTimeUpdate: (() => void) | null = null;
+    let onEnded: (() => void) | null = null;
+
     const stopOnce = () => {
       if (stopped) return;
       stopped = true;
-      if (animId !== null) {
-        cancelAnimationFrame(animId);
-      }
-      if (stopTimer !== null) {
-        clearTimeout(stopTimer);
-      }
+      if (onTimeUpdate) video.removeEventListener('timeupdate', onTimeUpdate);
+      if (onEnded) video.removeEventListener('ended', onEnded);
+      if (animId !== null) cancelAnimationFrame(animId);
+      if (stopTimer !== null) clearTimeout(stopTimer);
       video.pause();
-      if (recorder.state !== 'inactive') {
-        recorder.stop();
-      }
+      if (recorder.state !== 'inactive') recorder.stop();
     };
 
     recorder.ondataavailable = (e) => {
@@ -73,19 +82,22 @@ export function generateVideoPreview(video: HTMLVideoElement): Promise<Blob> {
     };
     recorder.onerror = () => reject(new Error('MediaRecorder error'));
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) {
-      reject(new Error('Canvas not supported'));
-      return;
-    }
-
-    const maxDuration = Math.min(5, video.duration || 5);
-    video.currentTime = 0;
-    recorder.start();
-
-    const drawFrame = () => {
+    // バックグラウンドタブ対策: timeupdate でフレーム描画
+    onTimeUpdate = () => {
+      if (stopped) return;
       ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
-      if (video.currentTime < maxDuration && !video.ended) {
+      if (video.currentTime >= endTime || video.ended) stopOnce();
+    };
+    video.addEventListener('timeupdate', onTimeUpdate);
+
+    onEnded = () => stopOnce();
+    video.addEventListener('ended', onEnded);
+
+    // フォアグラウンド時は requestAnimationFrame でスムーズに描画
+    const drawFrame = () => {
+      if (stopped) return;
+      ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+      if (video.currentTime < endTime && !video.ended) {
         animId = requestAnimationFrame(drawFrame);
       } else {
         stopOnce();
@@ -96,18 +108,21 @@ export function generateVideoPreview(video: HTMLVideoElement): Promise<Blob> {
       video.removeEventListener('seeked', onSeeked);
       void video.play().then(() => {
         animId = requestAnimationFrame(drawFrame);
-        stopTimer = window.setTimeout(() => {
-          stopOnce();
-        }, maxDuration * 1000);
+        stopTimer = window.setTimeout(stopOnce, maxDuration * 1000);
       }).catch((error: unknown) => {
         stopOnce();
         reject(error instanceof Error ? error : new Error('動画プレビュー再生に失敗しました'));
       });
     };
 
+    recorder.start();
     video.addEventListener('seeked', onSeeked);
-    video.currentTime = 0;
+    video.currentTime = startTime;
   });
+}
+
+export function generateVideoPreview(video: HTMLVideoElement): Promise<Blob> {
+  return generateScenePreview(video, 0);
 }
 
 export async function generateVideoThumbnail(video: HTMLVideoElement): Promise<Blob> {
