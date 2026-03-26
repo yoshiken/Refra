@@ -11,10 +11,24 @@ Refraは、社内チーム向けのリファレンス素材（画像・動画）
 - テスト: Vitest（ユニット/コンポーネント）、Playwright（E2E）
 
 ## 開発環境
-- Docker ComposeでLocalStackを起動し、S3/Cognitoをエミュレート
-- `.env`で環境変数を設定
-- `npm install`で依存パッケージ導入
-- `npm run dev`でローカル開発サーバ起動
+
+Docker Composeだけで開発環境が立ち上がります。
+
+```bash
+docker compose up -d
+```
+
+- Vite devサーバー: http://localhost:5173
+- LocalStack (S3): http://localhost:4566
+
+ソースコードはbind mountされているため、ファイル編集でHMRが効きます。
+
+`package.json` の依存を変更した場合はリビルドしてください。
+
+```bash
+docker compose down -v
+docker compose up -d --build
+```
 
 ## テスト
 - `npm run test`（ユニット/コンポーネント）
@@ -22,7 +36,8 @@ Refraは、社内チーム向けのリファレンス素材（画像・動画）
 
 ## ディレクトリ構成
 - `src/` ... フロントエンド実装
-- `docker-compose.yml` ... LocalStack構成
+- `docker-compose.yml` ... LocalStack + Vite devサーバー構成
+- `Dockerfile` ... Vite devサーバー用イメージ
 - `to_human.md` ... 人間向け質問/要望記載（gitignore済み）
 - `spec.md` ... 仕様書
 
