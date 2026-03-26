@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react';
 import { getS3Url } from '@/lib/s3Client';
 import { uploadFile, deleteFile } from '@/services/storage';
+import { generateScenePreview } from '@/services/thumbnail';
 import type { AssetMeta, FolderMeta, SceneMeta } from '@/types';
 
 interface SceneEditorProps {
@@ -8,61 +9,13 @@ interface SceneEditorProps {
   onUpdate: (nextAsset: AssetMeta) => Promise<void>;
   onPlayScene: (scene: SceneMeta) => void;
   folders: FolderMeta[];
+  startTime: number;
+  endTime: number;
+  onStartTimeChange: (t: number) => void;
+  onEndTimeChange: (t: number) => void;
 }
 
-async function captureFrameAt(videoSrc: string, timeSeconds: number): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    const video = document.createElement('video');
-    video.crossOrigin = 'anonymous';
-    video.muted = true;
-    video.preload = 'metadata';
-
-    const cleanup = () => {
-      video.removeEventListener('loadedmetadata', onLoadedMetadata);
-      video.removeEventListener('seeked', onSeeked);
-      video.removeEventListener('error', onError);
-    };
-
-    const onError = () => {
-      cleanup();
-      reject(new Error('サムネイル用の動画読み込みに失敗しました'));
-    };
-
-    const onSeeked = () => {
-      cleanup();
-      if (video.videoWidth === 0 || video.videoHeight === 0) {
-        reject(new Error('Invalid video size'));
-        return;
-      }
-      const targetWidth = 200;
-      const targetHeight = Math.round((video.videoHeight / video.videoWidth) * targetWidth);
-      const canvas = document.createElement('canvas');
-      canvas.width = targetWidth;
-      canvas.height = targetHeight;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) { reject(new Error('Canvas not supported')); return; }
-      ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
-      canvas.toBlob((blob) => {
-        if (!blob) { reject(new Error('フレームキャプチャに失敗しました')); return; }
-        resolve(blob);
-      }, 'image/webp', 0.8);
-    };
-
-    const onLoadedMetadata = () => {
-      video.currentTime = timeSeconds;
-    };
-
-    video.addEventListener('loadedmetadata', onLoadedMetadata);
-    video.addEventListener('seeked', onSeeked);
-    video.addEventListener('error', onError);
-    video.src = videoSrc;
-    video.load();
-  });
-}
-
-export default function SceneEditor({ asset, onUpdate, onPlayScene, folders }: SceneEditorProps) {
-  const [startTime, setStartTime] = useState(0);
-  const [endTime, setEndTime] = useState(5);
+export default function SceneEditor({ asset, onUpdate, onPlayScene, folders, startTime, endTime, onStartTimeChange, onEndTimeChange }: SceneEditorProps) {
   const [sceneName, setSceneName] = useState('');
   const [sceneTags, setSceneTags] = useState('');
   const [sceneFolderId, setSceneFolderId] = useState('');
@@ -86,10 +39,20 @@ export default function SceneEditor({ asset, onUpdate, onPlayScene, folders }: S
     setIsAdding(true);
     try {
       const sceneId = crypto.randomUUID();
-      const thumbKey = `thumbnails/scenes/${sceneId}.webp`;
+      const previewKey = `previews/scenes/${sceneId}.webm`;
 
-      const thumbBlob = await captureFrameAt(getS3Url(asset.originalPath), startTime);
-      await uploadFile(thumbKey, thumbBlob);
+      const video = document.createElement('video');
+      video.crossOrigin = 'anonymous';
+      video.muted = true;
+      video.src = getS3Url(asset.originalPath);
+      await new Promise<void>((resolve, reject) => {
+        video.onloadedmetadata = () => resolve();
+        video.onerror = () => reject(new Error('動画読み込みに失敗'));
+        video.load();
+      });
+      const previewBlob = await generateScenePreview(video, startTime);
+      await uploadFile(previewKey, previewBlob);
+      video.src = '';
 
       const newScene: SceneMeta = {
         id: sceneId,
@@ -99,7 +62,9 @@ export default function SceneEditor({ asset, onUpdate, onPlayScene, folders }: S
         folderId: sceneFolderId || null,
         startTime,
         endTime,
-        thumbnailPath: `/${thumbKey}`,
+        thumbnailPath: asset.thumbnailPath,
+        previewPath: `/${previewKey}`,
+        comments: [],
         createdBy: 'local-user',
         createdAt: new Date().toISOString(),
       };
@@ -121,7 +86,12 @@ export default function SceneEditor({ asset, onUpdate, onPlayScene, folders }: S
   };
 
   const removeScene = async (scene: SceneMeta) => {
-    await deleteFile(scene.thumbnailPath.replace(/^\//, ''));
+    if (scene.thumbnailPath !== asset.thumbnailPath) {
+      await deleteFile(scene.thumbnailPath.replace(/^\//, ''));
+    }
+    if (scene.previewPath) {
+      await deleteFile(scene.previewPath.replace(/^\//, ''));
+    }
     if (activeSceneIdRef.current === scene.id) {
       activeSceneIdRef.current = null;
     }
@@ -149,7 +119,7 @@ export default function SceneEditor({ asset, onUpdate, onPlayScene, folders }: S
           min={0}
           step={0.1}
           value={startTime}
-          onChange={(e) => setStartTime(Number(e.target.value))}
+          onChange={(e) => onStartTimeChange(Number(e.target.value))}
           className="rounded border border-border-primary bg-bg-primary px-2 py-1 text-sm"
           placeholder="開始秒"
         />
@@ -158,7 +128,7 @@ export default function SceneEditor({ asset, onUpdate, onPlayScene, folders }: S
           min={0}
           step={0.1}
           value={endTime}
-          onChange={(e) => setEndTime(Number(e.target.value))}
+          onChange={(e) => onEndTimeChange(Number(e.target.value))}
           className="rounded border border-border-primary bg-bg-primary px-2 py-1 text-sm"
           placeholder="終了秒"
         />

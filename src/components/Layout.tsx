@@ -8,6 +8,9 @@ export default function Layout() {
           Refra
         </Link>
         <nav className="flex items-center gap-2 text-sm">
+          <Link to="/assets" className="rounded border border-border-primary px-3 py-2 hover:bg-bg-tertiary">
+            アセット一覧
+          </Link>
           <Link to="/upload" className="rounded border border-border-primary px-3 py-2 hover:bg-bg-tertiary">
             アップロード
           </Link>
