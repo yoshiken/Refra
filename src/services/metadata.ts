@@ -16,21 +16,28 @@ function normalizeEtag(etag?: string): string {
 }
 
 export async function getIndex(): Promise<{ data: IndexFile; etag: string }> {
-  const res = await s3Client.send(
-    new GetObjectCommand({ Bucket: BUCKET_NAME, Key: 'meta/index.json' })
-  );
-  const body = await res.Body?.transformToString();
-  const data = body ? (JSON.parse(body) as IndexFile) : { ...DEFAULT_INDEX };
+  try {
+    const res = await s3Client.send(
+      new GetObjectCommand({ Bucket: BUCKET_NAME, Key: 'meta/index.json' })
+    );
+    const body = await res.Body?.transformToString();
+    const data = body ? (JSON.parse(body) as IndexFile) : { ...DEFAULT_INDEX };
 
-  if (!data.scenes) {
-    data.scenes = [];
-    data.version = 2;
+    if (!data.scenes) {
+      data.scenes = [];
+      data.version = 2;
+    }
+
+    return {
+      data,
+      etag: normalizeEtag(res.ETag),
+    };
+  } catch (e) {
+    if ((e as { name?: string }).name === 'NoSuchKey') {
+      return { data: { ...DEFAULT_INDEX }, etag: '' };
+    }
+    throw e;
   }
-
-  return {
-    data,
-    etag: normalizeEtag(res.ETag),
-  };
 }
 
 function normalizeScene(scene: SceneMeta, assetId: string, index: number): SceneMeta {
@@ -41,6 +48,7 @@ function normalizeScene(scene: SceneMeta, assetId: string, index: number): Scene
     name: scene.name || fallbackName,
     tags: Array.isArray(scene.tags) ? scene.tags : [],
     folderId: scene.folderId ?? null,
+    comments: Array.isArray(scene.comments) ? scene.comments : [],
   };
 }
 
@@ -123,6 +131,8 @@ export async function syncScenesForAsset(
   assetId: string,
   assetName: string,
   assetType: 'image' | 'video',
+  originalPath: string,
+  previewPath: string | null,
   scenes: SceneMeta[]
 ): Promise<void> {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt += 1) {
@@ -136,6 +146,8 @@ export async function syncScenesForAsset(
       name: scene.name,
       tags: scene.tags,
       thumbnailPath: scene.thumbnailPath,
+      originalPath,
+      previewPath: scene.previewPath ?? previewPath,
       startTime: scene.startTime,
       endTime: scene.endTime,
       folderId: scene.folderId,

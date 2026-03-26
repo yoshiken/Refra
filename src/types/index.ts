@@ -44,7 +44,6 @@ export interface AssetMeta {
   resolution: { width: number; height: number } | null;
   duration: number | null;
   scenes: SceneMeta[];
-  comments: CommentMeta[];
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -65,6 +64,8 @@ export interface SceneMeta {
   startTime: number;
   endTime: number;
   thumbnailPath: string;
+  previewPath: string | null;
+  comments: CommentMeta[];
   createdBy: string;
   createdAt: string;
 }
@@ -76,6 +77,8 @@ export interface SceneIndexEntry {
   name: string;
   tags: string[];
   thumbnailPath: string;
+  originalPath: string;
+  previewPath: string | null;
   startTime: number;
   endTime: number;
   folderId: string | null;
