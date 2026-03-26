@@ -3,9 +3,10 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { deleteFile } from '@/services/storage';
 import { getAssetMeta, getIndex, putAssetMeta, syncScenesForAsset, updateIndex } from '@/services/metadata';
 import { getS3Url } from '@/lib/s3Client';
-import type { AssetMeta, AssetIndexEntry, FolderMeta, SceneMeta } from '@/types';
+import type { AssetMeta, AssetIndexEntry, CommentMeta, FolderMeta, SceneMeta } from '@/types';
 import VideoPlayer, { type VideoPlayerRef } from '@/components/VideoPlayer';
 import ImageViewer from '@/components/ImageViewer';
+import CommentPanel from '@/components/CommentPanel';
 
 export default function SceneDetail() {
   const navigate = useNavigate();
@@ -19,7 +20,18 @@ export default function SceneDetail() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [loopScene, setLoopScene] = useState<SceneMeta | null>(null);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
   const videoRef = useRef<VideoPlayerRef>(null);
+
+  // ESC で最大化解除
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsExpanded(false);
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
 
   useEffect(() => {
     if (!assetId || !sceneId) {
@@ -67,7 +79,7 @@ export default function SceneDetail() {
       updatedAt: next.updatedAt,
     };
     await updateIndex(indexEntry);
-    await syncScenesForAsset(next.id, next.name, next.type, next.scenes);
+    await syncScenesForAsset(next.id, next.name, next.type, next.originalPath, next.previewPath, next.scenes);
     const latest = await getAssetMeta(next.id);
     const targetScene = latest.data.scenes.find((entry) => entry.id === sceneId);
     if (!targetScene) {
@@ -90,6 +102,37 @@ export default function SceneDetail() {
   const updateCurrentScene = async (updater: (current: SceneMeta) => SceneMeta) => {
     if (!asset || !scene) return;
     const nextScene = updater(scene);
+    const nextAsset: AssetMeta = {
+      ...asset,
+      scenes: asset.scenes.map((entry) => (entry.id === scene.id ? nextScene : entry)),
+      updatedAt: new Date().toISOString(),
+    };
+    await saveMeta(nextAsset);
+  };
+
+  const addComment = async (text: string, timestamp: number | null) => {
+    if (!scene || !asset) return;
+    const newComment: CommentMeta = {
+      id: crypto.randomUUID(),
+      text,
+      author: 'User',
+      timestamp,
+      createdAt: new Date().toISOString(),
+    };
+    const nextScene = { ...scene, comments: [...(scene.comments ?? []), newComment] };
+    setScene(nextScene);
+    const nextAsset: AssetMeta = {
+      ...asset,
+      scenes: asset.scenes.map((entry) => (entry.id === scene.id ? nextScene : entry)),
+      updatedAt: new Date().toISOString(),
+    };
+    await saveMeta(nextAsset);
+  };
+
+  const deleteComment = async (commentId: string) => {
+    if (!scene || !asset) return;
+    const nextScene = { ...scene, comments: (scene.comments ?? []).filter((c) => c.id !== commentId) };
+    setScene(nextScene);
     const nextAsset: AssetMeta = {
       ...asset,
       scenes: asset.scenes.map((entry) => (entry.id === scene.id ? nextScene : entry)),
@@ -174,22 +217,58 @@ export default function SceneDetail() {
             </button>
           </header>
 
-          <section>
+          <section
+            className={isExpanded ? 'fixed inset-0 z-50 flex flex-col bg-black p-3' : 'relative'}
+            role={isExpanded ? 'dialog' : undefined}
+            aria-modal={isExpanded ? true : undefined}
+          >
             {asset.type === 'video' ? (
-              <VideoPlayer
-                ref={videoRef}
-                src={getS3Url(asset.originalPath)}
-                comments={[]}
-                scenes={asset.scenes}
-                duration={asset.duration}
-                autoPlay
-                muted
-                onTimeUpdate={(time) => {
-                  if (loopScene && time >= loopScene.endTime) {
-                    videoRef.current?.seek(loopScene.startTime);
-                  }
-                }}
-              />
+              <>
+                {isExpanded && (
+                  <div className="mb-2 flex shrink-0 justify-end">
+                    <button
+                      type="button"
+                      className="rounded border border-border-primary bg-bg-secondary px-3 py-1 text-xs"
+                      onClick={() => setIsExpanded(false)}
+                      title="最大化解除 (Esc)"
+                    >
+                      ✕ 閉じる
+                    </button>
+                  </div>
+                )}
+                <div className={isExpanded ? 'min-h-0 flex-1 overflow-y-auto' : ''}>
+                  <VideoPlayer
+                    ref={videoRef}
+                    src={getS3Url(asset.originalPath)}
+                    comments={scene.comments ?? []}
+                    scenes={[]}
+                    duration={asset.duration}
+                    autoPlay
+                    muted
+                    expanded={isExpanded}
+                    rangeStart={scene.startTime}
+                    rangeEnd={scene.endTime}
+                    showFrameStrip
+                    preloadAllFrames
+                    onTimeUpdate={(time) => {
+                      setCurrentTime(time);
+                      if (loopScene && time >= loopScene.endTime) {
+                        videoRef.current?.seek(loopScene.startTime);
+                      }
+                    }}
+                  />
+                </div>
+                {!isExpanded && (
+                  <button
+                    type="button"
+                    className="absolute right-2 top-2 z-10 rounded border border-border-primary bg-black/60 px-2 py-1 text-xs text-white backdrop-blur-sm hover:bg-black/80"
+                    onClick={() => setIsExpanded(true)}
+                    title="最大化"
+                  >
+                    ⛶
+                  </button>
+                )}
+              </>
             ) : (
               <ImageViewer src={getS3Url(asset.originalPath)} alt={scene.name} />
             )}
@@ -250,6 +329,18 @@ export default function SceneDetail() {
               タイムレンジ: {scene.startTime.toFixed(1)}s - {scene.endTime.toFixed(1)}s
             </p>
           )}
+
+          <CommentPanel
+            comments={scene.comments ?? []}
+            isVideo={asset.type === 'video'}
+            currentTime={currentTime}
+            onAddComment={addComment}
+            onDeleteComment={deleteComment}
+            onSeekToTimestamp={(time) => {
+              videoRef.current?.seek(time);
+              videoRef.current?.pause();
+            }}
+          />
         </main>
       )}
     </div>

@@ -3,9 +3,8 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { deleteFile } from '@/services/storage';
 import { getAssetMeta, getIndex, putAssetMeta, removeFromIndex, syncScenesForAsset, updateIndex } from '@/services/metadata';
 import { getS3Url } from '@/lib/s3Client';
-import type { AssetMeta, CommentMeta, FolderMeta, SceneMeta } from '@/types';
+import type { AssetMeta, FolderMeta, SceneMeta } from '@/types';
 import ImageViewer from '@/components/ImageViewer';
-import CommentPanel from '@/components/CommentPanel';
 import VideoPlayer, { type VideoPlayerRef } from '@/components/VideoPlayer';
 import SceneEditor from '@/components/SceneEditor';
 
@@ -19,6 +18,8 @@ export default function AssetDetail() {
   const [loading, setLoading] = useState(true);
   const [loopScene, setLoopScene] = useState<SceneMeta | null>(null);
   const [folders, setFolders] = useState<FolderMeta[]>([]);
+  const [sceneStart, setSceneStart] = useState(0);
+  const [sceneEnd, setSceneEnd] = useState(5);
   const videoRef = useRef<VideoPlayerRef>(null);
 
   useEffect(() => {
@@ -54,19 +55,10 @@ export default function AssetDetail() {
       createdAt: next.createdAt,
       updatedAt: next.updatedAt,
     });
-    await syncScenesForAsset(next.id, next.name, next.type, next.scenes);
+    await syncScenesForAsset(next.id, next.name, next.type, next.originalPath, next.previewPath, next.scenes);
     const latest = await getAssetMeta(next.id);
     setAsset(latest.data);
     setEtag(latest.etag);
-  };
-
-  const deleteComment = async (commentId: string) => {
-    if (!asset) return;
-    await saveMeta({
-      ...asset,
-      comments: asset.comments.filter((item) => item.id !== commentId),
-      updatedAt: new Date().toISOString(),
-    });
   };
 
   const handleDeleteAsset = async () => {
@@ -115,7 +107,7 @@ export default function AssetDetail() {
       {error && <p className="mb-4 rounded border border-red-500/50 bg-red-500/10 p-3 text-sm">{error}</p>}
       {loading && <p className="text-sm text-text-secondary">読み込み中...</p>}
       {asset && (
-        <main className="grid gap-4 lg:grid-cols-[2fr_1fr]">
+        <main className="mx-auto max-w-5xl space-y-4">
           <section className="rounded border border-border-primary bg-bg-secondary p-4">
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
@@ -162,7 +154,6 @@ export default function AssetDetail() {
               <VideoPlayer
                 ref={videoRef}
                 src={getS3Url(asset.originalPath)}
-                comments={asset.comments}
                 scenes={asset.scenes}
                 duration={asset.duration}
                 autoPlay
@@ -173,6 +164,8 @@ export default function AssetDetail() {
                     videoRef.current?.seek(loopScene.startTime);
                   }
                 }}
+                onSetStart={setSceneStart}
+                onSetEnd={setSceneEnd}
               />
             )}
             {asset.sourceUrlMeta ? (
@@ -204,27 +197,12 @@ export default function AssetDetail() {
                 videoRef.current?.play();
               }}
               folders={folders}
+              startTime={sceneStart}
+              endTime={sceneEnd}
+              onStartTimeChange={setSceneStart}
+              onEndTimeChange={setSceneEnd}
             />
           </section>
-          <CommentPanel
-            comments={asset.comments}
-            isVideo={asset.type === 'video'}
-            onAddComment={async (text, ts) => {
-              const newComment: CommentMeta = {
-                id: crypto.randomUUID(),
-                text,
-                author: 'local-user',
-                timestamp: ts,
-                createdAt: new Date().toISOString(),
-              };
-              await saveMeta({
-                ...asset,
-                comments: [...asset.comments, newComment],
-                updatedAt: new Date().toISOString(),
-              });
-            }}
-            onDeleteComment={deleteComment}
-          />
         </main>
       )}
     </div>

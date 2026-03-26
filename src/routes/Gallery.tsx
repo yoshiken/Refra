@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { List, type RowComponentProps } from 'react-window';
 import FolderTree from '@/components/FolderTree';
@@ -6,6 +6,7 @@ import TagFilter from '@/components/TagFilter';
 import ThumbnailCard from '@/components/ThumbnailCard';
 import ContextMenu, { type ContextMenuItem } from '@/components/ContextMenu';
 import { addCompareAsset, clearCompareAssets, getCompareAssets } from '@/stores/compareStore';
+import { getS3Url } from '@/lib/s3Client';
 import { getSettings } from '@/stores/settingsStore';
 import { getAssetMeta, getIndex, putAssetMeta, saveIndex, syncScenesForAsset } from '@/services/metadata';
 import { deleteFile } from '@/services/storage';
@@ -24,8 +25,8 @@ interface ContextState {
   items: ContextMenuItem[];
 }
 
-const CARD_PADDING = 14;
-const CARD_LABEL = 72;
+const CARD_GAP = 8; // gap-2
+const CARD_LABEL = 4; // border のみ（テキストなし）
 
 export default function Gallery() {
   const navigate = useNavigate();
@@ -38,12 +39,13 @@ export default function Gallery() {
   const [thumbnailSize, setThumbnailSize] = useState(200);
   const [compareMode, setCompareMode] = useState(false);
   const [compareIds, setCompareIds] = useState<string[]>([]);
+  const [isDragOver, setIsDragOver] = useState(false);
   const [folderName, setFolderName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [contextMenu, setContextMenu] = useState<ContextState | null>(null);
-  const [viewportWidth, setViewportWidth] = useState(900);
-  const [viewportHeight, setViewportHeight] = useState(600);
+  const [viewportWidth, setViewportWidth] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
   const viewportRef = useRef<HTMLDivElement | null>(null);
 
   const fetchAll = async () => {
@@ -67,22 +69,17 @@ export default function Gallery() {
   }, []);
 
   useEffect(() => {
-    if (!viewportRef.current) return;
+    const el = viewportRef.current;
+    if (!el) return;
     const updateSize = () => {
-      if (!viewportRef.current) return;
-      setViewportWidth(viewportRef.current.clientWidth);
-      setViewportHeight(Math.max(320, window.innerHeight - 180));
+      setViewportWidth(el.clientWidth);
+      setViewportHeight(el.clientHeight);
     };
     updateSize();
-
     const observer = new ResizeObserver(updateSize);
-    observer.observe(viewportRef.current);
-    window.addEventListener('resize', updateSize);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener('resize', updateSize);
-    };
-  }, []);
+    observer.observe(el);
+    return () => observer.disconnect();
+  });
 
   const parsedTags = useMemo(() => normalizeTagInput(tagQuery), [tagQuery]);
   const filteredScenes = useMemo(() => {
@@ -102,8 +99,13 @@ export default function Gallery() {
     });
   }, [scenes, selectedFolderId, search, parsedTags, tagMode]);
 
-  const rowHeight = thumbnailSize + CARD_LABEL;
-  const columnCount = Math.max(1, Math.floor(viewportWidth / (thumbnailSize + CARD_PADDING)));
+  const columnCount = viewportWidth > 0
+    ? Math.max(1, Math.floor((viewportWidth + CARD_GAP) / (thumbnailSize + CARD_GAP)))
+    : 1;
+  const cardWidth = viewportWidth > 0
+    ? (viewportWidth - CARD_GAP * (columnCount - 1)) / columnCount
+    : thumbnailSize;
+  const rowHeight = Math.round(cardWidth * (9 / 16)) + CARD_LABEL;
   const rowCount = Math.ceil(filteredScenes.length / columnCount);
 
   const Row = ({ index, style }: RowComponentProps<object>) => {
@@ -112,7 +114,7 @@ export default function Gallery() {
     return (
       <div
         style={{ ...style, gridTemplateColumns: `repeat(${columnCount}, minmax(0, 1fr))` }}
-        className="grid gap-2 px-1"
+        className="grid gap-2"
         aria-label={`row-${index}`}
       >
         {rowScenes.map((scene) => (
@@ -120,7 +122,7 @@ export default function Gallery() {
             key={scene.id}
             scene={scene}
             compareMode={compareMode}
-            isSelectedForCompare={compareIds.includes(scene.assetId)}
+            isSelectedForCompare={compareIds.includes(scene.id)}
             onToggleCompare={toggleCompare}
             onContextMenu={(e, targetScene) => {
               e.preventDefault();
@@ -149,7 +151,7 @@ export default function Gallery() {
                         updatedAt: new Date().toISOString(),
                       };
                       await putAssetMeta(next);
-                      await syncScenesForAsset(next.id, next.name, next.type, next.scenes);
+                      await syncScenesForAsset(next.id, next.name, next.type, next.originalPath, next.previewPath, next.scenes);
                       await fetchAll();
                     },
                   },
@@ -169,7 +171,7 @@ export default function Gallery() {
                         updatedAt: new Date().toISOString(),
                       };
                       await putAssetMeta(next);
-                      await syncScenesForAsset(next.id, next.name, next.type, next.scenes);
+                      await syncScenesForAsset(next.id, next.name, next.type, next.originalPath, next.previewPath, next.scenes);
                       await fetchAll();
                     },
                     danger: true,
@@ -204,13 +206,22 @@ export default function Gallery() {
     }
   };
 
-  const toggleCompare = async (id: string) => {
+  const toggleCompare = async (sceneId: string) => {
     try {
-      const next = await addCompareAsset(id);
+      const next = await addCompareAsset(sceneId);
       setCompareIds(next);
     } catch (e) {
       setError(e instanceof Error ? e.message : '比較モード更新に失敗しました');
     }
+  };
+
+  const handleDrop = async (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const sceneId = e.dataTransfer.getData('sceneId');
+    if (!sceneId || compareIds.includes(sceneId) || compareIds.length >= 4) return;
+    const next = await addCompareAsset(sceneId);
+    setCompareIds(next);
   };
 
   return (
@@ -268,48 +279,78 @@ export default function Gallery() {
               比較モード
             </label>
             {compareMode && (
-              <button
-                type="button"
-                className="w-full rounded bg-bg-tertiary px-2 py-2 text-sm font-semibold disabled:opacity-60"
-                disabled={compareIds.length === 0}
-                onClick={() => {
-                  if (compareIds.length === 0) return;
-                  navigate('/compare');
-                }}
-              >
-                比較表示へ（{compareIds.length}/4）
-              </button>
-            )}
-            {compareMode && compareIds.length > 0 && (
-              <button
-                type="button"
-                className="w-full rounded border border-border-primary px-2 py-2 text-xs"
-                onClick={async () => {
-                  const next = await clearCompareAssets();
-                  setCompareIds(next);
-                }}
-              >
-                比較選択をクリア
-              </button>
+              <>
+                <div
+                  onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+                  onDragLeave={() => setIsDragOver(false)}
+                  onDrop={(e) => { void handleDrop(e); }}
+                  className={`min-h-16 rounded border-2 border-dashed p-2 transition-colors ${isDragOver ? 'border-blue-400 bg-blue-500/10' : 'border-border-primary'}`}
+                >
+                  {compareIds.length === 0 ? (
+                    <p className="text-center text-xs text-text-secondary">ここにシーンをドロップ（最大4件）</p>
+                  ) : (
+                    <div className="space-y-1">
+                      {compareIds.map((sceneId) => {
+                        const s = scenes.find((sc) => sc.id === sceneId);
+                        return s ? (
+                          <div key={sceneId} className="flex items-center gap-1">
+                            <img src={getS3Url(s.thumbnailPath)} alt={s.name} className="h-8 w-12 flex-shrink-0 rounded object-cover" />
+                            <span className="min-w-0 flex-1 truncate text-xs">{s.name}</span>
+                            <button
+                              type="button"
+                              className="flex-shrink-0 text-xs text-text-secondary hover:text-text-primary"
+                              onClick={() => void toggleCompare(sceneId)}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ) : null;
+                      })}
+                    </div>
+                  )}
+                </div>
+                {compareIds.length > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      className="w-full rounded bg-blue-600 px-2 py-2 text-sm font-semibold text-white hover:bg-blue-500"
+                      onClick={() => navigate('/compare')}
+                    >
+                      比較ページへ（{compareIds.length}/4）
+                    </button>
+                    <button
+                      type="button"
+                      className="w-full rounded border border-border-primary px-2 py-1 text-xs"
+                      onClick={async () => {
+                        const next = await clearCompareAssets();
+                        setCompareIds(next);
+                      }}
+                    >
+                      クリア
+                    </button>
+                  </>
+                )}
+              </>
             )}
           </div>
         </aside>
 
-        <main className="rounded border border-border-primary bg-bg-secondary p-3">
+        <main
+          ref={viewportRef}
+          className="h-[calc(100vh-190px)] overflow-hidden rounded border border-border-primary bg-bg-secondary p-3"
+        >
           {loading ? (
             <p className="text-sm text-text-secondary">読み込み中...</p>
           ) : filteredScenes.length === 0 ? (
             <p className="text-sm text-text-secondary">シーンがありません。</p>
           ) : (
-            <div ref={viewportRef} className="h-[calc(100vh-190px)]">
-              <List
-                rowCount={rowCount}
-                rowHeight={rowHeight}
-                rowComponent={Row}
-                rowProps={{}}
-                style={{ height: viewportHeight, width: viewportWidth }}
-              />
-            </div>
+            <List
+              rowCount={rowCount}
+              rowHeight={rowHeight}
+              rowComponent={Row}
+              rowProps={{}}
+              style={{ height: viewportHeight }}
+            />
           )}
         </main>
       </div>

@@ -36,14 +36,13 @@ function loadImage(file: File): Promise<HTMLImageElement> {
   });
 }
 
-function loadVideo(file: File): Promise<HTMLVideoElement> {
+function loadVideo(file: File): Promise<{ video: HTMLVideoElement; revoke: () => void }> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const video = document.createElement('video');
     video.preload = 'metadata';
     video.onloadedmetadata = () => {
-      URL.revokeObjectURL(url);
-      resolve(video);
+      resolve({ video, revoke: () => URL.revokeObjectURL(url) });
     };
     video.onerror = () => {
       URL.revokeObjectURL(url);
@@ -147,13 +146,17 @@ export default function Upload() {
         thumbnailBlob = await generateImageThumbnail(image);
         resolution = getImageMeta(image).resolution;
       } else {
-        const video = await loadVideo(file);
-        thumbnailBlob = await generateVideoThumbnail(video);
-        const videoMeta = getVideoMeta(video);
-        duration = videoMeta.duration;
-        resolution = videoMeta.resolution;
-        setStatus('プレビュー動画生成中...');
-        previewBlob = await generateVideoPreview(video);
+        const { video, revoke } = await loadVideo(file);
+        try {
+          thumbnailBlob = await generateVideoThumbnail(video);
+          const videoMeta = getVideoMeta(video);
+          duration = videoMeta.duration;
+          resolution = videoMeta.resolution;
+          setStatus('プレビュー動画生成中...');
+          previewBlob = await generateVideoPreview(video);
+        } finally {
+          revoke();
+        }
       }
 
       setStatus('S3へアップロード中...');
@@ -177,6 +180,8 @@ export default function Upload() {
             startTime: 0,
             endTime: 0,
             thumbnailPath: `/${thumbnailKey}`,
+            previewPath: null,
+            comments: [],
             createdBy: 'local-user',
             createdAt: now,
           }]
@@ -202,7 +207,6 @@ export default function Upload() {
         resolution,
         duration,
         scenes,
-        comments: [],
         createdBy: 'local-user',
         createdAt: now,
         updatedAt: now,
@@ -225,7 +229,7 @@ export default function Upload() {
       setStatus('メタデータ更新中...');
       await putAssetMeta(metadata);
       await updateIndex(indexEntry);
-      await syncScenesForAsset(assetId, displayName, fileType, metadata.scenes);
+      await syncScenesForAsset(assetId, displayName, fileType, metadata.originalPath, metadata.previewPath, metadata.scenes);
 
       setUploadProgress(100);
       navigate(`/asset/${assetId}`);
@@ -273,7 +277,7 @@ export default function Upload() {
             {fileType === 'image' ? (
               <img src={previewUrl} alt="プレビュー" className="max-h-64 w-full object-contain bg-bg-tertiary" />
             ) : fileType === 'video' ? (
-              <video src={previewUrl} controls className="max-h-64 w-full bg-black" />
+              <video src={previewUrl} autoPlay muted playsInline controls className="max-h-64 w-full bg-black" />
             ) : null}
             <div className="border-t border-border-primary p-3 text-xs text-text-secondary">
               <span>{file.name}</span>
